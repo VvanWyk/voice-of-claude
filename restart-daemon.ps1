@@ -28,7 +28,16 @@ function Test-Port([int]$p) {
 # Persist + apply any voice/engine change so both this launch and future
 # sessions pick it up.
 if ($Engine)  { setx TTS_ENGINE $Engine | Out-Null; $env:TTS_ENGINE = $Engine; Write-Host "TTS_ENGINE = $Engine" }
-if ($Voice)   { setx TTS_PIPER_VOICE $Voice | Out-Null; $env:TTS_PIPER_VOICE = $Voice; Write-Host "TTS_PIPER_VOICE = $Voice" }
+if ($Voice) {
+    # Route -Voice to the variable the active engine reads: Kokoro uses
+    # TTS_VOICE, Piper uses TTS_PIPER_VOICE. Pick the engine -Engine sets, else
+    # the current one, else the piper default.
+    $targetEngine = if ($Engine) { $Engine } elseif ($env:TTS_ENGINE) { $env:TTS_ENGINE } else { "piper" }
+    $voiceVar = if ($targetEngine -eq "kokoro") { "TTS_VOICE" } else { "TTS_PIPER_VOICE" }
+    setx $voiceVar $Voice | Out-Null
+    Set-Item -Path "Env:$voiceVar" -Value $Voice
+    Write-Host "$voiceVar = $Voice"
+}
 if ($Speaker) { setx TTS_PIPER_SPEAKER $Speaker | Out-Null; $env:TTS_PIPER_SPEAKER = $Speaker; Write-Host "TTS_PIPER_SPEAKER = $Speaker" }
 if ($Speed)   { setx TTS_SPEED $Speed | Out-Null; $env:TTS_SPEED = $Speed; Write-Host "TTS_SPEED = $Speed" }
 if ($Gap)     { setx TTS_GAP_MS $Gap | Out-Null; $env:TTS_GAP_MS = $Gap; Write-Host "TTS_GAP_MS = $Gap" }
