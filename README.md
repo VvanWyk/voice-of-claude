@@ -22,7 +22,7 @@ delay. Pick the engine via the `TTS_ENGINE` environment variable.
 ## How it works
 
 ```
-claude finishes a reply ─────────┐
+claude finishes a reply ──────────┐
 claude asks for permission/input ─┤   (Notification hook)
 claude asks a structured question ┤   (PreToolUse / AskUserQuestion hook)
                                   └─► speak.py ──(localhost socket)──► tts_server.py (daemon, warm)
