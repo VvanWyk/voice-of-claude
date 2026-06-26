@@ -1,6 +1,8 @@
 # Local CPU-only TTS stack for Claude Code voice output (no GPU, no cloud)
 piper-tts>=1.3        # default engine: fast, low latency (GPL-3.0)
 kokoro-onnx>=0.4,<1.0 # optional engine: more natural, slower (Apache-2.0/MIT)
-onnxruntime>=1.17
+onnxruntime>=1.17   # CPU build. For GPU, uninstall this and install ONE of:
+#   onnxruntime-gpu        # NVIDIA CUDA (Piper + Kokoro) - set TTS_DEVICE=auto|cuda
+#   onnxruntime-directml   # any DX12 GPU incl. Intel/AMD (Kokoro only) - TTS_DEVICE=auto|dml
 sounddevice>=0.5
 numpy>=1.24,<2.3

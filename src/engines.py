@@ -22,6 +22,42 @@ import config
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
+# Preferred GPU ONNX providers, best first. CPU is always appended as fallback.
+_GPU_PROVIDERS = ["CUDAExecutionProvider", "DmlExecutionProvider"]
+
+
+def select_providers():
+    """Ordered ONNX providers honoring TTS_DEVICE, with CPU as the fallback.
+
+    Only providers the installed onnxruntime actually exposes are used, so the
+    default CPU-only build transparently stays on CPU.
+    """
+    import onnxruntime as rt
+
+    available = rt.get_available_providers()
+    want = config.DEVICE
+    gpu = []
+    if want in ("auto", "gpu"):
+        gpu = [p for p in _GPU_PROVIDERS if p in available]
+    elif want == "cuda":
+        gpu = [p for p in ("CUDAExecutionProvider",) if p in available]
+    elif want in ("dml", "directml"):
+        gpu = [p for p in ("DmlExecutionProvider",) if p in available]
+    # "cpu" (or no GPU provider available) -> CPU only
+    return gpu + ["CPUExecutionProvider"]
+
+
+def cuda_available() -> bool:
+    """True if the CUDA provider is installed and GPU use is permitted."""
+    if config.DEVICE == "cpu":
+        return False
+    try:
+        import onnxruntime as rt
+
+        return "CUDAExecutionProvider" in rt.get_available_providers()
+    except Exception:
+        return False
+
 
 def chunk_sentences(text: str, target: int = 220):
     """Group sentences into ~`target`-char chunks for responsive streaming."""
@@ -52,7 +88,10 @@ class PiperEngine:
             raise FileNotFoundError(
                 f"Piper voice missing: {model}\nRun setup.ps1 to download it."
             )
-        self.voice = PiperVoice.load(str(model), config_path=str(cfg))
+        # Piper's only GPU path is CUDA (NVIDIA); it has no DirectML option.
+        use_cuda = cuda_available()
+        self.device = "cuda" if use_cuda else "cpu"
+        self.voice = PiperVoice.load(str(model), config_path=str(cfg), use_cuda=use_cuda)
 
         syn_kwargs = {}
         if config.SPEED and config.SPEED != 1.0:
@@ -84,15 +123,22 @@ class KokoroEngine:
                 f"Kokoro model missing:\n  {config.MODEL_PATH}\n  {config.VOICES_PATH}\n"
                 "Run setup.ps1 to download it."
             )
-        # Tuning matters a lot on this hybrid P/E-core CPU: letting onnxruntime
-        # spread across the weak efficiency cores roughly doubled latency.
+        providers = select_providers()
         so = rt.SessionOptions()
-        so.intra_op_num_threads = config.KOKORO_THREADS
-        so.inter_op_num_threads = 1
+        if providers[0] == "CPUExecutionProvider":
+            # Tuning matters a lot on this hybrid P/E-core CPU: letting
+            # onnxruntime spread across the weak efficiency cores roughly
+            # doubled latency. (Irrelevant once a GPU provider is leading.)
+            so.intra_op_num_threads = config.KOKORO_THREADS
+            so.inter_op_num_threads = 1
         so.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess = rt.InferenceSession(
-            str(config.MODEL_PATH), sess_options=so, providers=["CPUExecutionProvider"]
+            str(config.MODEL_PATH), sess_options=so, providers=providers
         )
+        # What ORT actually bound to (it falls back silently if a GPU op is
+        # unsupported), e.g. "CUDAExecutionProvider" -> "cuda".
+        active = sess.get_providers()[0] if sess.get_providers() else "CPUExecutionProvider"
+        self.device = active.replace("ExecutionProvider", "").lower() or "cpu"
         self.k = Kokoro.from_session(sess, str(config.VOICES_PATH))
 
     def stream(self, text: str):

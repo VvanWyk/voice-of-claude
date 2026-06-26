@@ -50,6 +50,16 @@ PORT = _env_int("TTS_PORT", 7766)
 # "kokoro" -> more natural, but ~3.7x real-time on the same CPU
 ENGINE = _env("TTS_ENGINE", "piper").lower()
 
+# Compute device:
+#   auto (default) -> use a GPU ONNX provider if one is installed, else CPU
+#   cpu            -> force CPU
+#   cuda           -> NVIDIA only (needs onnxruntime-gpu; Piper + Kokoro)
+#   dml            -> DirectML, any DX12 GPU incl. Intel/AMD (needs
+#                     onnxruntime-directml; Kokoro only - Piper has no DML path)
+# GPU only engages if the installed onnxruntime exposes the provider; the
+# default CPU-only onnxruntime always falls back to CPU.
+DEVICE = _env("TTS_DEVICE", "auto").lower()
+
 # --- Voice / synthesis -----------------------------------------------------
 SPEED = _env_float("TTS_SPEED", 1.0)
 LANG = _env("TTS_LANG", "en-us")

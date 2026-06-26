@@ -111,7 +111,10 @@ class TTSDaemon:
         except Exception as e:
             log.error("Could not load any TTS engine: %s. Run setup.ps1.", e)
             raise SystemExit(2)
-        log.info("Engine '%s' ready in %.1fs", self.engine.name, time.time() - t0)
+        log.info(
+            "Engine '%s' ready in %.1fs (device: %s)",
+            self.engine.name, time.time() - t0, getattr(self.engine, "device", "cpu"),
+        )
 
     def reload(self, args: str) -> bool:
         """Re-read config and rebuild the engine in place (no process restart).

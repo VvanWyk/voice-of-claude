@@ -80,6 +80,7 @@ then start a fresh `claude` session.
 | Variable             | Default              | Meaning                                              |
 |----------------------|----------------------|------------------------------------------------------|
 | `TTS_ENGINE`         | `piper`              | `piper` (fast) or `kokoro` (natural)                 |
+| `TTS_DEVICE`         | `auto`              | `auto` (GPU if available, else CPU), `cpu`, `cuda`, `dml` — see GPU note |
 | `TTS_MUTE`           | `0`                  | `1` = stay silent                                    |
 | `TTS_SPEED`          | `1.0`               | Word speed, both engines (`<1` slower, `>1` faster)  |
 | `TTS_GAP_MS`         | `0`                 | Extra silence between sentences, ms — wider pauses without slowing words |
@@ -120,6 +121,31 @@ project path and waits for the model to load). `__RELOAD__` re-reads config and
 rebuilds the engine instantly; pass inline `TTS_*=value` overrides so the change
 applies even though the daemon's launch environment is fixed. To mute on the fly,
 send `__MUTE__` / `__UNMUTE__` to the socket.
+
+### GPU acceleration (optional)
+
+The default install is **CPU-only** — Piper is already faster than real-time on a
+modest CPU, so a GPU usually isn't needed. `TTS_DEVICE=auto` will use a GPU
+*only if the installed `onnxruntime` exposes a GPU provider*; otherwise it stays
+on CPU. The active device is logged at startup: `Engine 'kokoro' ready (device: cuda)`.
+
+To actually enable a GPU you must install a GPU-capable onnxruntime (the default
+`onnxruntime` is CPU-only) into `.venv`:
+
+```powershell
+# NVIDIA (CUDA) — accelerates BOTH Piper and Kokoro:
+.\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
+.\.venv\Scripts\python.exe -m pip install onnxruntime-gpu
+
+# Any DirectX 12 GPU incl. Intel/AMD (DirectML) — Kokoro only, Piper has no DML path:
+.\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
+.\.venv\Scripts\python.exe -m pip install onnxruntime-directml
+```
+
+Then restart the daemon. Notes: `onnxruntime`, `onnxruntime-gpu`, and
+`onnxruntime-directml` are mutually exclusive — install exactly one. CUDA also
+needs an NVIDIA GPU + matching CUDA/cuDNN runtime. For small TTS models an
+**integrated GPU is often no faster than the CPU**, so measure before committing.
 
 ### About the ESC interrupt key
 ESC also clears the input line in the Claude Code TUI. If that bothers you, pick
