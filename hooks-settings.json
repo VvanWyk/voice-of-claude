@@ -1,0 +1,53 @@
+{
+  "_comment": "Merge the 'hooks' block into your Claude Code settings.json (e.g. %USERPROFILE%\\.claude\\settings.json). Replace the paths below with the absolute paths printed by setup.ps1. SessionStart starts the warm TTS daemon; Stop speaks each finished reply.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\pythonw.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\launch_server.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\python.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\speak.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\python.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\speak.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\python.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\speak.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
