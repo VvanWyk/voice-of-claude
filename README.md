@@ -45,7 +45,6 @@ fire-and-forget client, so it never slows Claude Code down.
 ## Install
 
 ```powershell
-cd "C:\Users\vermaak.vanwyk\Source\playground\AI\the voice of claude"
 ./setup.ps1
 ```
 
