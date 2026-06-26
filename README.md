@@ -1,8 +1,9 @@
 # The Voice of Claude
 
-Give Claude Code a **local voice**. When Claude finishes a response, a CPU-only
-text-to-speech engine speaks a cleaned-up version aloud. **No cloud, no GPU** —
-everything runs on your PC.
+Give Claude Code a **local voice**. When Claude finishes a response, a local
+text-to-speech engine speaks a cleaned-up version aloud. **Nothing leaves your
+PC — no cloud.** It runs on the CPU out of the box (no GPU required), with
+[optional GPU acceleration](#gpu-acceleration-optional) if you have one.
 
 Voice *input* is already handled by Claude Code's built-in dictation (hold
 spacebar). This project adds the missing half: voice *output*.
@@ -164,7 +165,7 @@ Scroll Lock — and restart the daemon.
 | `src/text_filter.py`  | Markdown strip, code-block summarizing, length cap          |
 | `src/config.py`       | Env-var driven configuration                                |
 | `setup.ps1`           | venv + deps + model download + prints hook config           |
-| `restart-daemon.ps1`  | Stop + relaunch the daemon (optionally set voice/engine)    |
+| `restart-daemon.ps1`  | Stop + relaunch the daemon (optionally set engine/voice/speaker/speed/gap) |
 
 ## Troubleshooting
 
