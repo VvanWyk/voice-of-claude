@@ -82,7 +82,8 @@ then start a fresh `claude` session.
 |----------------------|----------------------|------------------------------------------------------|
 | `TTS_ENGINE`         | `piper`              | `piper` (fast) or `kokoro` (natural)                 |
 | `TTS_MUTE`           | `0`                  | `1` = stay silent                                    |
-| `TTS_SPEED`          | `1.0`               | Speech rate (both engines)                           |
+| `TTS_SPEED`          | `1.0`               | Word speed, both engines (`<1` slower, `>1` faster)  |
+| `TTS_GAP_MS`         | `0`                 | Extra silence between sentences, ms — wider pauses without slowing words |
 | `TTS_MAX_CHARS`      | `10000`             | Cap before "see the terminal for the rest" (`0` = no cap, speak it all) |
 | `TTS_BARGE_IN`       | `1`                  | `1` = a new reply interrupts the current one         |
 | `TTS_SPEAK_NOTIFICATIONS` | `1`            | Speak permission / input prompts (Notification hook) |
@@ -91,6 +92,7 @@ then start a fresh `claude` session.
 | `TTS_PORT`           | `7766`              | Localhost port for the daemon                        |
 | `TTS_INTERRUPT_VK`   | `27` (ESC)          | Win32 virtual-key code to interrupt playback         |
 | `TTS_PIPER_VOICE`    | `en_US-lessac-medium`| Piper voice model under `models/piper/`              |
+| `TTS_PIPER_SPEAKER`  | _(unset)_           | Speaker index for multi-speaker Piper voices (e.g. `16` for libritts_r) |
 | `TTS_VOICE`          | `af_heart`          | Kokoro voice id (e.g. `am_adam`, `bf_emma`)          |
 | `TTS_KOKORO_THREADS` | `4`                 | Kokoro onnxruntime intra-op threads (tuning)         |
 | `TTS_LANG`           | `en-us`             | Language for Kokoro phonemization                    |
@@ -99,13 +101,20 @@ The daemon reads these **at launch**, so a change to the engine or voice needs
 the daemon to restart or reload. Two ways:
 
 ```powershell
-# Clean restart (stops any running daemon, persists + applies the change):
-./restart-daemon.ps1 -Voice en_US-amy-medium        # Piper voice
-./restart-daemon.ps1 -Engine kokoro -Voice af_heart
+# Clean restart (stops any running daemon, persists + applies the change).
+# All switches are optional and combinable:
+./restart-daemon.ps1 -Voice en_US-amy-medium                 # Piper voice
+./restart-daemon.ps1 -Engine kokoro -Voice af_heart          # switch engine + voice
+./restart-daemon.ps1 -Voice en_US-libritts_r-medium -Speaker 16   # multi-speaker voice
+./restart-daemon.ps1 -Speed 0.95 -Gap 350                    # word speed + sentence pause
 
 # Or reload in place, no process restart, via the socket control verb:
-.\.venv\Scripts\python.exe -c "import socket; socket.create_connection(('127.0.0.1',7766)).sendall(b'__RELOAD__ TTS_PIPER_VOICE=en_US-amy-medium\n')"
+.\.venv\Scripts\python.exe -c "import socket; socket.create_connection(('127.0.0.1',7766)).sendall(b'__RELOAD__ TTS_GAP_MS=350\n')"
 ```
+
+> Multi-speaker Piper voices (e.g. `en_US-libritts_r-medium`) carry hundreds of
+> speakers in one model. Download once, then pick a speaker by its index with
+> `-Speaker` / `TTS_PIPER_SPEAKER` — no extra download to switch speakers.
 
 `restart-daemon.ps1` is the reliable option (it also handles the spaces in the
 project path and waits for the model to load). `__RELOAD__` re-reads config and

@@ -1,5 +1,5 @@
 {
-  "_comment": "Merge the 'hooks' block into your Claude Code settings.json (e.g. %USERPROFILE%\\.claude\\settings.json). Replace the paths below with the absolute paths printed by setup.ps1. SessionStart starts the warm TTS daemon; Stop speaks each finished reply.",
+  "_comment": "Merge the 'hooks' block into your Claude Code settings.json (e.g. %USERPROFILE%\\.claude\\settings.json). Replace <PROJECT_DIR> with this repo's absolute path (use doubled backslashes), or just paste the snippet setup.ps1 prints with the paths already filled in. SessionStart starts the warm TTS daemon; Stop/Notification/PreToolUse speak replies, prompts, and questions.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\pythonw.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\launch_server.py\"",
+            "command": "\"<PROJECT_DIR>\\.venv\\Scripts\\pythonw.exe\" \"<PROJECT_DIR>\\src\\launch_server.py\"",
             "timeout": 15
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\python.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\speak.py\"",
+            "command": "\"<PROJECT_DIR>\\.venv\\Scripts\\python.exe\" \"<PROJECT_DIR>\\src\\speak.py\"",
             "timeout": 15
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\python.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\speak.py\"",
+            "command": "\"<PROJECT_DIR>\\.venv\\Scripts\\python.exe\" \"<PROJECT_DIR>\\src\\speak.py\"",
             "timeout": 15
           }
         ]
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\.venv\\Scripts\\python.exe\" \"C:\\Users\\vermaak.vanwyk\\Source\\playground\\AI\\the voice of claude\\src\\speak.py\"",
+            "command": "\"<PROJECT_DIR>\\.venv\\Scripts\\python.exe\" \"<PROJECT_DIR>\\src\\speak.py\"",
             "timeout": 15
           }
         ]
