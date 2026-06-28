@@ -45,29 +45,44 @@ def _extract_text(message: dict) -> str:
 
 
 def last_assistant_message(transcript_path: str) -> Tuple[str, str]:
-    last_uuid = ""
-    last_text = ""
+    """Return (uuid, text) for the last assistant turn.
+
+    Claude Code writes one JSONL entry per streaming chunk, so a single response
+    produces many consecutive assistant entries. We walk backwards and collect
+    all of them, stopping at the first non-assistant line, then join the chunks
+    in order to reconstruct the full reply.
+    """
     try:
         with open(transcript_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                if obj.get("type") != "assistant":
-                    continue
-                message = obj.get("message")
-                if not isinstance(message, dict):
-                    continue
-                text = _extract_text(message)
-                if text:
-                    last_text = text
-                    last_uuid = obj.get("uuid") or message.get("id") or ""
+            lines = f.readlines()
     except (OSError, UnicodeDecodeError):
         return "", ""
-    return last_uuid, last_text
+
+    chunks: list[tuple[str, str]] = []  # (uuid, text) in reverse order
+    for raw in reversed(lines):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") != "assistant":
+            break  # hit a user/tool line — all streaming chunks collected
+        message = obj.get("message")
+        if not isinstance(message, dict):
+            continue
+        text = _extract_text(message)
+        if text:
+            uuid = obj.get("uuid") or message.get("id") or ""
+            chunks.append((uuid, text))
+
+    if not chunks:
+        return "", ""
+
+    chunks.reverse()  # restore chronological order
+    last_uuid = chunks[-1][0]
+    full_text = "\n\n".join(text for _, text in chunks)
+    return last_uuid, full_text

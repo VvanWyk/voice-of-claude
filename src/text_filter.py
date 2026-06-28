@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_EMDASH_RE = re.compile(r"\s*[—–]\s*")   # em-dash and en-dash → ", "
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
@@ -49,6 +50,7 @@ def clean(text: str, max_chars: int = 10000) -> str:
     code_blocks = len(_FENCE_RE.findall(text))
     text = _FENCE_RE.sub(" ", text)
 
+    text = _EMDASH_RE.sub(", ", text)
     text = _IMAGE_RE.sub(" ", text)
     text = _LINK_RE.sub(r"\1", text)          # keep link label, drop URL
     text = _INLINE_CODE_RE.sub(r"\1", text)   # speak inline code as plain words

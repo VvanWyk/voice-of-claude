@@ -19,6 +19,7 @@ Run directly to test in the foreground:  python src/tts_server.py
 """
 from __future__ import annotations
 
+import base64
 import ctypes
 import importlib
 import logging
@@ -176,19 +177,50 @@ class TTSDaemon:
 
     def _speak(self, text: str) -> None:
         gap = max(0, config.GAP_MS) / 1000.0
-        try:
-            first = True
-            for samples, sr in self.engine.stream(text):
-                if self.interrupt.is_set() or self.shutdown.is_set():
-                    return
-                if gap and not first:
-                    self._pause(gap)  # widen the pause between sentences
+        audio_q: "queue.Queue" = queue.Queue(maxsize=2)
+
+        b64 = lambda s: base64.b64encode(s.encode("utf-8")).decode("ascii")
+        self._overlay_send(f"SHOW:{b64(text)}")
+
+        def _producer() -> None:
+            try:
+                for chunk in self.engine.stream(text):
                     if self.interrupt.is_set() or self.shutdown.is_set():
                         return
-                self._play(samples, sr)
-                first = False
-        except Exception as e:  # synthesis must never crash the daemon
-            log.warning("Synthesis failed: %s", e)
+                    audio_q.put(chunk)
+            except Exception as e:
+                log.warning("Synthesis failed: %s", e)
+            finally:
+                audio_q.put(None)
+
+        threading.Thread(target=_producer, daemon=True).start()
+
+        first = True
+        while True:
+            try:
+                item = audio_q.get(timeout=0.1)
+            except queue.Empty:
+                if self.interrupt.is_set() or self.shutdown.is_set():
+                    self._overlay_send("HIDE")
+                    return
+                continue
+            if item is None:
+                break
+            if self.interrupt.is_set() or self.shutdown.is_set():
+                self._overlay_send("HIDE")
+                return
+            samples, sr, piece = item
+            if piece:
+                self._overlay_send(f"SPEAK:{b64(piece)}")
+            if gap and not first:
+                self._pause(gap)
+                if self.interrupt.is_set() or self.shutdown.is_set():
+                    self._overlay_send("HIDE")
+                    return
+            self._play(samples, sr)
+            first = False
+
+        self._overlay_send("HIDE")
 
     def _pause(self, seconds: float) -> None:
         """Silent, interruptible delay between chunks."""
@@ -210,8 +242,14 @@ class TTSDaemon:
                 return
             stream = sd.get_stream()
             if stream is None or not stream.active:
-                return
+                break
             time.sleep(0.02)
+        # Flush the OS audio buffer before moving to the next chunk,
+        # otherwise the last few ms are cut off when sd.play() is called again.
+        try:
+            sd.wait()
+        except Exception:
+            pass
 
     # --- interrupt key poll ------------------------------------------------
     def key_poller(self) -> None:
@@ -310,6 +348,16 @@ class TTSDaemon:
                 log.info("Speak (%d chars): %s", len(line), line[:80])
                 self.enqueue(line)
 
+    # --- overlay -----------------------------------------------------------
+    def _overlay_send(self, cmd: str) -> None:
+        if not config.OVERLAY:
+            return
+        try:
+            with socket.create_connection(("127.0.0.1", config.OVERLAY_PORT), timeout=0.15) as s:
+                s.sendall((cmd + "\n").encode("utf-8"))
+        except OSError:
+            pass  # overlay not running — skip silently
+
     # --- lifecycle ---------------------------------------------------------
     def run(self) -> None:
         # The named-mutex guard in main() already made us the single instance;
@@ -329,12 +377,33 @@ class TTSDaemon:
             log.info("Daemon stopped.")
 
 
+def _log_unhandled(exc_type, exc_val, exc_tb) -> None:
+    log.critical("Unhandled exception — daemon will exit", exc_info=(exc_type, exc_val, exc_tb))
+
+
+def _write_pid() -> None:
+    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (config.STATE_DIR / "tts_server.pid").write_text(str(os.getpid()))
+
+
+def _remove_pid() -> None:
+    try:
+        (config.STATE_DIR / "tts_server.pid").unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def main() -> None:
     _setup_logging()
+    sys.excepthook = _log_unhandled
     if not _acquire_singleton():
         log.info("Another TTS daemon already owns port %s; exiting.", config.PORT)
         return
-    TTSDaemon().run()
+    _write_pid()
+    try:
+        TTSDaemon().run()
+    finally:
+        _remove_pid()
 
 
 if __name__ == "__main__":

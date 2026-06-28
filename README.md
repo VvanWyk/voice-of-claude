@@ -1,47 +1,66 @@
 # The Voice of Claude
 
 Give Claude Code a **local voice**. When Claude finishes a response, a local
-text-to-speech engine speaks a cleaned-up version aloud. **Nothing leaves your
-PC — no cloud.** It runs on the CPU out of the box (no GPU required), with
-[optional GPU acceleration](#gpu-acceleration-optional) if you have one.
+text-to-speech engine speaks a cleaned-up version aloud. A floating
+**karaoke-style overlay** highlights the sentence being spoken in real time.
+**Nothing leaves your PC — no cloud.**
 
 Voice *input* is already handled by Claude Code's built-in dictation (hold
 spacebar). This project adds the missing half: voice *output*.
 
-## Two engines
+## Features
 
-| Engine | Speed on an i7-1265U (measured) | Voice | License |
-|--------|----------------------------------|-------|---------|
-| **[Piper](https://github.com/OHF-Voice/piper1-gpl)** (default) | ~0.5x real-time (≈2x faster than real-time) — **low latency** | Good, slightly synthetic | GPL-3.0 |
-| **[Kokoro](https://github.com/thewh1teagle/kokoro-onnx)** | ~3.7x real-time (slower than real-time) — laggy on this CPU | More natural | Apache-2.0 / MIT |
+- **Streaming audio** — synthesis and playback overlap so speech starts on the
+  first sentence while the rest is being generated.
+- **Karaoke overlay** — a borderless always-on-top window shows the full reply
+  and highlights each sentence as it is spoken. Draggable. Press **ESC** to
+  stop playback and dismiss.
+- **Attention chime** — a short sound plays when Claude needs your input
+  (permission prompt or `AskUserQuestion`), instead of interrupting the current
+  reply.
+- **Text normalisation** — numbers, units, decimals, ordinals, abbreviations
+  and currency are converted to natural spoken form before synthesis
+  (`15,200kg` → *fifteen thousand two hundred kilograms*; `3.14` → *three
+  point one four*; `1.62 m/s` → *one point six two metres per second*).
+- **GPU acceleration** — Kokoro runs on CUDA or DirectML when available; falls
+  back to CPU transparently.
+- **Self-healing daemon** — the `Stop` hook checks whether the daemon and
+  overlay are running and restarts them if not, so a crashed process recovers
+  automatically on the next reply.
+- **ESC interrupt** — stops playback instantly, polled globally so it works
+  regardless of which window has focus.
 
-Piper is the default because it comfortably hits the low-latency goal on a 15W
-laptop CPU and streams audio as it generates. Switch to Kokoro with
-`TTS_ENGINE=kokoro` if you prefer the more natural voice and can tolerate the
-delay. Pick the engine via the `TTS_ENGINE` environment variable.
+## Two TTS engines
+
+| Engine | Speed on CPU (i7-1265U) | Voice quality | License |
+|--------|--------------------------|---------------|---------|
+| **[Piper](https://github.com/OHF-Voice/piper1-gpl)** (default) | ~2× real-time — **low latency** | Good, slightly synthetic | GPL-3.0 |
+| **[Kokoro](https://github.com/thewh1teagle/kokoro-onnx)** | ~0.27× real-time on CPU; near-instant on GPU | More natural | Apache-2.0 / MIT |
+
+Piper is the default for CPU users. Switch to Kokoro with `TTS_ENGINE=kokoro`
+if you have a GPU or prefer the more natural voice. On an NVIDIA GPU, Kokoro
+matches Piper's latency while sounding noticeably better.
 
 ## How it works
 
 ```
-claude finishes a reply ──────────┐
-claude asks for permission/input ─┤   (Notification hook)
-claude asks a structured question ┤   (PreToolUse / AskUserQuestion hook)
-                                  └─► speak.py ──(localhost socket)──► tts_server.py (daemon, warm)
-                                       picks the text for the event       synthesize → speaker
-                                       strips markdown / code             ESC interrupts playback
-                                       caps length
-  SessionStart hook ─► launch_server.py starts the daemon if it isn't running
+claude finishes a reply ──────────────┐
+                                      └─► Stop hook ──► launch_server.py (self-heal)
+                                                    └──► speak.py ──(socket)──► tts_server.py
+                                                                                  ├─ normalise text
+                                                                                  ├─ synthesise chunks
+                                                                                  ├─ stream to speaker
+                                                                                  └─► overlay.py (highlight)
+
+claude asks for permission / input ───► Notification hook ──► bell.py (chime)
+claude asks a structured question  ───► PreToolUse hook   ──► bell.py (chime)
+
+SessionStart / Stop hook ─► launch_server.py ─► starts daemon + overlay if not running
 ```
 
-`speak.py` is wired to three events and dispatches on the hook's
-`hook_event_name`: **Stop** speaks the finished reply; **Notification** speaks
-permission/input prompts; **PreToolUse** (matcher `AskUserQuestion`) reads a
-structured question and its options aloud the moment it appears — `Stop` can't,
-since it doesn't fire mid-turn.
-
 The daemon loads the model **once** and stays warm, so speech starts quickly
-instead of paying a model-load on every reply. The `Stop` hook is a tiny
-fire-and-forget client, so it never slows Claude Code down.
+on every reply. A producer-consumer pipeline overlaps synthesis and playback —
+by the time the first chunk finishes playing, the second is already synthesised.
 
 ## Install
 
@@ -49,137 +68,159 @@ fire-and-forget client, so it never slows Claude Code down.
 ./setup.ps1
 ```
 
-This creates `.venv`, installs dependencies, downloads the Piper voice (default)
-and the Kokoro int8 model into `models/`, and prints a hooks snippet. Merge that
-snippet into your Claude Code settings (`%USERPROFILE%\.claude\settings.json`),
-then start a fresh `claude` session.
+Creates `.venv`, installs dependencies, downloads the Piper voice and the
+Kokoro int8 model into `models/`, and prints a hooks snippet. Merge that
+snippet into `%USERPROFILE%\.claude\settings.json`, then start a fresh
+`claude` session.
 
-> Requires Python 3.10+ on PATH. The download step needs internet **once**;
-> after that everything is offline.
+> Requires Python 3.10+ on PATH. Download needs internet once; after that
+> everything is offline.
+
+### Recommended settings.json hooks
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "type": "command", "command": "\"<repo>\\.venv\\Scripts\\pythonw.exe\" \"<repo>\\src\\launch_server.py\"", "timeout": 15 }
+    ],
+    "Stop": [
+      { "type": "command", "command": "\"<repo>\\.venv\\Scripts\\pythonw.exe\" \"<repo>\\src\\launch_server.py\"", "timeout": 15 },
+      { "type": "command", "command": "\"<repo>\\.venv\\Scripts\\python.exe\" \"<repo>\\src\\speak.py\"", "timeout": 15 }
+    ],
+    "Notification": [
+      { "type": "command", "command": "\"<repo>\\.venv\\Scripts\\python.exe\" \"<repo>\\src\\bell.py\"", "timeout": 5 }
+    ],
+    "PreToolUse": [
+      { "matcher": "AskUserQuestion", "type": "command", "command": "\"<repo>\\.venv\\Scripts\\python.exe\" \"<repo>\\src\\bell.py\"", "timeout": 5 }
+    ]
+  },
+  "env": {
+    "TTS_ENGINE": "kokoro",
+    "TTS_DEVICE": "cuda",
+    "TTS_VOICE": "af_sarah",
+    "TTS_BELL_SOUND": "<repo>\\sounds\\chime.wav"
+  }
+}
+```
+
+Replace `<repo>` with the absolute path to your clone. The `Stop` hook runs
+`launch_server.py` first so a crashed daemon/overlay is automatically restarted
+before the reply is spoken.
 
 ## Test before wiring up hooks
 
-1. **Start the daemon in the foreground** (you'll see logs):
+1. **Start the daemon** (you'll see logs):
    ```powershell
    .\.venv\Scripts\python.exe .\src\tts_server.py
    ```
 2. **Send it text** from another terminal:
    ```powershell
-   .\.venv\Scripts\python.exe -c "import socket; socket.create_connection(('127.0.0.1',7766)).sendall(b'Hello, this is Claude speaking locally.\n')"
+   .\.venv\Scripts\python.exe -c "import socket; socket.create_connection(('127.0.0.1',7766)).sendall(b'Hello from Claude.\n')"
    ```
-   You should hear the voice. Press **ESC** to cut it off mid-sentence.
-3. **Test the hook end-to-end offline** with the bundled smoke test:
+3. **Start the overlay** (optional):
+   ```powershell
+   .\.venv\Scripts\pythonw.exe .\src\overlay.py
+   ```
+4. **Run the smoke test**:
    ```powershell
    .\.venv\Scripts\python.exe .\tests\smoke_test.py
    ```
-   It builds a fake transcript (with markdown, a code block, and an over-long
-   reply), feeds a synthetic `Stop` payload to `speak.py`, and you hear the
-   filtered result.
 
-## Configuration (environment variables)
+## Configuration
 
-| Variable             | Default              | Meaning                                              |
-|----------------------|----------------------|------------------------------------------------------|
-| `TTS_ENGINE`         | `piper`              | `piper` (fast) or `kokoro` (natural)                 |
-| `TTS_DEVICE`         | `auto`              | `auto` (GPU if available, else CPU), `cpu`, `cuda`, `dml` — see GPU note |
-| `TTS_MUTE`           | `0`                  | `1` = stay silent                                    |
-| `TTS_SPEED`          | `1.0`               | Word speed, both engines (`<1` slower, `>1` faster)  |
-| `TTS_GAP_MS`         | `0`                 | Extra silence between sentences, ms — wider pauses without slowing words |
-| `TTS_MAX_CHARS`      | `10000`             | Cap before "see the terminal for the rest" (`0` = no cap, speak it all) |
-| `TTS_BARGE_IN`       | `1`                  | `1` = a new reply interrupts the current one         |
-| `TTS_SPEAK_NOTIFICATIONS` | `1`            | Speak permission / input prompts (Notification hook) |
-| `TTS_SPEAK_QUESTIONS`| `1`                  | Speak `AskUserQuestion` prompts + their options      |
-| `TTS_SPEAK_IDLE`     | `0`                  | `1` = also speak the "waiting for your input" nag     |
-| `TTS_PORT`           | `7766`              | Localhost port for the daemon                        |
-| `TTS_INTERRUPT_VK`   | `27` (ESC)          | Win32 virtual-key code to interrupt playback         |
-| `TTS_PIPER_VOICE`    | `en_US-lessac-medium`| Piper voice model under `models/piper/`              |
-| `TTS_PIPER_SPEAKER`  | _(unset)_           | Speaker index for multi-speaker Piper voices (e.g. `16` for libritts_r) |
-| `TTS_VOICE`          | `af_heart`          | Kokoro voice id (e.g. `am_adam`, `bf_emma`)          |
-| `TTS_KOKORO_THREADS` | `4`                 | Kokoro onnxruntime intra-op threads (tuning)         |
-| `TTS_LANG`           | `en-us`             | Language for Kokoro phonemization                    |
+| Variable | Default | Meaning |
+|---|---|---|
+| `TTS_ENGINE` | `piper` | `piper` (fast) or `kokoro` (natural) |
+| `TTS_DEVICE` | `auto` | `auto`, `cpu`, `cuda`, `dml` — GPU provider for onnxruntime |
+| `TTS_VOICE` | `af_heart` | Kokoro voice id (`af_sarah`, `am_adam`, `bf_emma`, …) |
+| `TTS_PIPER_VOICE` | `en_US-lessac-medium` | Piper voice model under `models/piper/` |
+| `TTS_PIPER_SPEAKER` | _(unset)_ | Speaker index for multi-speaker Piper voices |
+| `TTS_SPEED` | `1.0` | Playback speed (`<1` slower, `>1` faster) |
+| `TTS_GAP_MS` | `0` | Extra silence between sentences (ms) |
+| `TTS_MAX_CHARS` | `10000` | Cap reply length before truncating (`0` = no cap) |
+| `TTS_MUTE` | `0` | `1` = stay silent |
+| `TTS_BARGE_IN` | `1` | `1` = new reply interrupts the current one |
+| `TTS_SPEAK_NOTIFICATIONS` | `1` | `0` = silence Notification hook |
+| `TTS_SPEAK_QUESTIONS` | `1` | `0` = silence AskUserQuestion hook |
+| `TTS_SPEAK_IDLE` | `0` | `1` = also speak the "waiting for input" nag |
+| `TTS_PORT` | `7766` | Daemon localhost port |
+| `TTS_INTERRUPT_VK` | `27` (ESC) | Win32 virtual-key code to interrupt playback |
+| `TTS_KOKORO_THREADS` | `4` | Kokoro onnxruntime intra-op threads (CPU tuning) |
+| `TTS_LANG` | `en-us` | Language for Kokoro phonemisation |
+| `TTS_OVERLAY` | `1` | `0` = disable the karaoke overlay |
+| `TTS_OVERLAY_PORT` | `7767` | Overlay localhost port |
+| `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
 
-The daemon reads these **at launch**, so a change to the engine or voice needs
-the daemon to restart or reload. Two ways:
+Changes to engine, voice or device need a daemon restart:
 
 ```powershell
-# Clean restart (stops any running daemon, persists + applies the change).
-# All switches are optional and combinable:
-./restart-daemon.ps1 -Voice en_US-amy-medium                 # Piper voice
-./restart-daemon.ps1 -Engine kokoro -Voice af_heart          # switch engine + voice
-./restart-daemon.ps1 -Voice en_US-libritts_r-medium -Speaker 16   # multi-speaker voice
-./restart-daemon.ps1 -Speed 0.95 -Gap 350                    # word speed + sentence pause
+# Restart via the helper script
+./restart-daemon.ps1 -Engine kokoro -Voice af_sarah
 
-# Or reload in place, no process restart, via the socket control verb:
-.\.venv\Scripts\python.exe -c "import socket; socket.create_connection(('127.0.0.1',7766)).sendall(b'__RELOAD__ TTS_GAP_MS=350\n')"
+# Or reload config in place (no process restart):
+.\.venv\Scripts\python.exe -c "import socket; socket.create_connection(('127.0.0.1',7766)).sendall(b'__RELOAD__ TTS_VOICE=af_sarah\n')"
 ```
 
-> Multi-speaker Piper voices (e.g. `en_US-libritts_r-medium`) carry hundreds of
-> speakers in one model. Download once, then pick a speaker by its index with
-> `-Speaker` / `TTS_PIPER_SPEAKER` — no extra download to switch speakers.
+### GPU acceleration
 
-`restart-daemon.ps1` is the reliable option (it also handles the spaces in the
-project path and waits for the model to load). `__RELOAD__` re-reads config and
-rebuilds the engine instantly; pass inline `TTS_*=value` overrides so the change
-applies even though the daemon's launch environment is fixed. To mute on the fly,
-send `__MUTE__` / `__UNMUTE__` to the socket.
-
-### GPU acceleration (optional)
-
-The default install is **CPU-only** — Piper is already faster than real-time on a
-modest CPU, so a GPU usually isn't needed. `TTS_DEVICE=auto` will use a GPU
-*only if the installed `onnxruntime` exposes a GPU provider*; otherwise it stays
-on CPU. The active device is logged at startup: `Engine 'kokoro' ready (device: cuda)`.
-
-To actually enable a GPU you must install a GPU-capable onnxruntime (the default
-`onnxruntime` is CPU-only) into `.venv`:
+The default `onnxruntime` package is CPU-only. To enable a GPU:
 
 ```powershell
-# NVIDIA (CUDA) — accelerates BOTH Piper and Kokoro:
+# NVIDIA CUDA (accelerates Piper and Kokoro):
 .\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
 .\.venv\Scripts\python.exe -m pip install onnxruntime-gpu
 
-# Any DirectX 12 GPU incl. Intel/AMD (DirectML) — Kokoro only, Piper has no DML path:
+# Any DirectX 12 GPU — Intel / AMD (Kokoro only, Piper has no DML path):
 .\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
 .\.venv\Scripts\python.exe -m pip install onnxruntime-directml
 ```
 
-Then restart the daemon. Notes: `onnxruntime`, `onnxruntime-gpu`, and
-`onnxruntime-directml` are mutually exclusive — install exactly one. CUDA also
-needs an NVIDIA GPU + matching CUDA/cuDNN runtime. For small TTS models an
-**integrated GPU is often no faster than the CPU**, so measure before committing.
+`onnxruntime`, `onnxruntime-gpu`, and `onnxruntime-directml` are mutually
+exclusive — install exactly one. Set `TTS_DEVICE=cuda` or `TTS_DEVICE=dml`
+then restart the daemon. The active device is logged at startup:
+`Engine 'kokoro' ready (device: cuda)`.
 
 ### About the ESC interrupt key
-ESC also clears the input line in the Claude Code TUI. If that bothers you, pick
-another key via `TTS_INTERRUPT_VK` — e.g. `19` for Pause/Break or `145` for
-Scroll Lock — and restart the daemon.
+
+ESC also clears the Claude Code input line. To use a different key, set
+`TTS_INTERRUPT_VK` — e.g. `19` (Pause/Break) or `145` (Scroll Lock) — and
+restart the daemon.
 
 ## Files
 
-| Path                  | Role                                                        |
-|-----------------------|-------------------------------------------------------------|
-| `src/tts_server.py`   | Warm daemon: socket + interruptible streaming playback      |
-| `src/engines.py`      | Pluggable Piper / Kokoro engines (same `stream()` interface)|
-| `src/speak.py`        | Hook client for Stop / Notification / AskUserQuestion → filter → socket |
-| `src/launch_server.py`| `SessionStart` hook: start the daemon if needed             |
-| `src/transcript.py`   | Extract last assistant message from the `.jsonl` transcript |
-| `src/text_filter.py`  | Markdown strip, code-block summarizing, length cap          |
-| `src/config.py`       | Env-var driven configuration                                |
-| `setup.ps1`           | venv + deps + model download + prints hook config           |
-| `restart-daemon.ps1`  | Stop + relaunch the daemon (optionally set engine/voice/speaker/speed/gap) |
+| Path | Role |
+|------|------|
+| `src/tts_server.py` | Warm daemon: socket server, streaming producer-consumer playback |
+| `src/engines.py` | Pluggable Piper / Kokoro engines (`stream()` → `(samples, sr, chunk)`) |
+| `src/normalizer.py` | Text normalisation: numbers, units, decimals, ordinals, abbreviations |
+| `src/overlay.py` | Karaoke overlay: floating window, sentence highlighting, ESC hint |
+| `src/speak.py` | Stop / Notification / AskUserQuestion hook client → daemon socket |
+| `src/bell.py` | Attention chime: plays `TTS_BELL_SOUND` WAV or system beep |
+| `src/launch_server.py` | SessionStart / Stop hook: start daemon + overlay if not running |
+| `src/transcript.py` | Extract last assistant message from the `.jsonl` transcript |
+| `src/text_filter.py` | Markdown strip, em-dash normalisation, code-block summarising, length cap |
+| `src/config.py` | Env-var driven configuration |
+| `sounds/chime.wav` | Default attention chime (replace with any WAV via `TTS_BELL_SOUND`) |
+| `setup.ps1` | venv + deps + model download + prints hook config |
+| `restart-daemon.ps1` | Stop + relaunch daemon (optionally change engine/voice/speed/gap) |
 
 ## Troubleshooting
 
-- **No audio**: check `.state/tts_server.log`. Confirm the daemon is running and
-  bound to the port (`__PING__` returns `PONG`).
-- **Speech is delayed on the first reply of a session**: the daemon was cold;
-  `SessionStart` launches it but model load takes ~1–2 s. Subsequent replies are
-  instant.
-- **It reads code aloud**: it shouldn't — code fences become "I shared a code
-  block." Inline `code` is read as plain words by design.
+- **No audio or overlay**: check `.state/tts_server.log`. Send `__PING__` to
+  port 7766 — it should return `PONG`. If not, run `launch_server.py` manually.
+- **Delayed first reply**: normal on cold start — the model loads in ~3 s. The
+  `Stop` hook self-heals a crashed daemon so you rarely need to restart manually.
+- **Duplicate daemon processes**: harmless — the named-mutex singleton guard
+  ensures only one instance serves the port; extras exit immediately.
+- **Numbers sound wrong**: the normaliser runs before synthesis. Check
+  `src/normalizer.py` if a specific pattern isn't converted.
+- **It reads code aloud**: it shouldn't — code fences become *"I shared a code
+  block."* Inline `code` is read as plain words by design.
 
 ## License notes
 
-- **Piper** (default engine) is **GPL-3.0**. Fine for personal/local use; if you
-  redistribute this project, mind the GPL terms or switch the default to Kokoro.
-- **Kokoro** weights are **Apache-2.0** and the `kokoro-onnx` code is **MIT** —
-  fully permissive. Set `TTS_ENGINE=kokoro` to use it.
+- **Piper** is **GPL-3.0**. Fine for personal/local use; mind the GPL terms if
+  you redistribute.
+- **Kokoro** weights are **Apache-2.0** and `kokoro-onnx` is **MIT** —
+  fully permissive.

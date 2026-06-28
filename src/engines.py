@@ -19,6 +19,7 @@ import re
 import numpy as np
 
 import config
+import normalizer
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
@@ -107,8 +108,13 @@ class PiperEngine:
             self._syn_config = SynthesisConfig(**syn_kwargs)
 
     def stream(self, text: str):
+        first = True
         for chunk in self.voice.synthesize(text, syn_config=self._syn_config):
-            yield np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16), chunk.sample_rate
+            # Piper doesn't expose per-sentence chunks; label first chunk with
+            # the full text so the overlay can show it, rest with "".
+            piece = text if first else ""
+            first = False
+            yield np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16), chunk.sample_rate, piece
 
 
 class KokoroEngine:
@@ -140,13 +146,26 @@ class KokoroEngine:
         active = sess.get_providers()[0] if sess.get_providers() else "CPUExecutionProvider"
         self.device = active.replace("ExecutionProvider", "").lower() or "cpu"
         self.k = Kokoro.from_session(sess, str(config.VOICES_PATH))
+        # Pre-compile CUDA kernels so the first real synthesis has no JIT delay.
+        try:
+            next(iter(self.stream("warm")), None)
+        except Exception:
+            pass
 
     def stream(self, text: str):
-        for piece in chunk_sentences(text):
+        for piece in chunk_sentences(text, target=100):
+            # Normalize for natural speech (decimals, ordinals, abbreviations)
+            # but keep the original piece so the overlay can highlight it.
+            spoken = normalizer.normalize(piece)
+            # trim=False preserves the natural audio tail; the default trim=True
+            # was clipping the last phoneme of each sentence.
             samples, sr = self.k.create(
-                piece, voice=config.VOICE, speed=config.SPEED, lang=config.LANG
+                spoken, voice=config.VOICE, speed=config.SPEED, lang=config.LANG,
+                trim=False,
             )
-            yield samples, sr
+            # Small silence pad for a natural inter-sentence gap.
+            pad = np.zeros(int(sr * 0.06), dtype=samples.dtype)
+            yield np.concatenate([samples, pad]), sr, piece
 
 
 def load_engine():

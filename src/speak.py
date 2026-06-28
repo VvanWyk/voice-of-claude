@@ -26,8 +26,10 @@ import transcript
 
 
 def _send(text: str) -> None:
+    # Protocol is newline-delimited; collapse newlines so the full reply is one line.
+    line = " ".join(text.splitlines())
     with socket.create_connection((config.HOST, config.PORT), timeout=1.5) as s:
-        s.sendall((text + "\n").encode("utf-8"))
+        s.sendall((line + "\n").encode("utf-8"))
 
 
 def _already_spoken(session_id: str, uuid: str) -> bool:

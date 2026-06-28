@@ -98,6 +98,12 @@ BARGE_IN = _env_bool("TTS_BARGE_IN", True)
 # Common alternatives: 0x13 = PAUSE/Break, 0x91 = ScrollLock.
 INTERRUPT_VK = _env_int("TTS_INTERRUPT_VK", 0x1B)
 
+# --- Overlay ----------------------------------------------------------------
+# Floating text overlay that highlights the sentence currently being spoken.
+# Set TTS_OVERLAY=0 to disable entirely.
+OVERLAY = _env_bool("TTS_OVERLAY", True)
+OVERLAY_PORT = _env_int("TTS_OVERLAY_PORT", 7767)
+
 # --- Which events to speak --------------------------------------------------
 # Stop (the finished reply) is always spoken. These add the other moments where
 # Claude is waiting on you, so a voice-only workflow doesn't miss them.
