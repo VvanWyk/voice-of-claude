@@ -5,16 +5,22 @@ TTS_OVERLAY_PORT (default 7767) for newline-terminated commands:
   SHOW:<base64>   – display the overlay with the full reply text
   SPEAK:<base64>  – highlight this chunk in the displayed text
   STATE:<name>    – transport state ("paused" / "playing") for the ⏯ button
+  PROG:<cur>:<total>:<frac>:<secs> – progress bar + "sentence 4 of 12" readout
   HIDE            – fade out and hide the window
 
-The window is borderless, always-on-top, and draggable. Transport buttons
-(⏮ ⏯ ⏭ ✕) and click-a-sentence-to-seek send commands back to the daemon on
-TTS_PORT. Set TTS_OVERLAY=0 to disable.
+The window is borderless, always-on-top, draggable, resizable via the ◢ grip
+(bottom-right) and scrollable with the mouse wheel; the spoken sentence is
+auto-centred in the view. Size and position persist across runs in
+.state/overlay_geometry.txt (any monitor; falls back to centred-on-primary if
+the saved spot is no longer on-screen). Transport buttons (⏮ ⏯ ⏭ ✕) and
+click-a-sentence-to-seek send commands back to the daemon on TTS_PORT.
+Set TTS_OVERLAY=0 to disable.
 """
 from __future__ import annotations
 
 import base64
 import os
+import re
 import socket
 import sys
 import threading
@@ -25,6 +31,7 @@ import config
 
 HOST = "127.0.0.1"
 PORT = config.OVERLAY_PORT
+GEOM_FILE = config.STATE_DIR / "overlay_geometry.txt"
 
 
 class OverlayWindow:
@@ -39,6 +46,8 @@ class OverlayWindow:
     HEIGHT   = 210
     W_FRAC   = 0.52
     ALPHA    = 0.93
+    MIN_W    = 380
+    MIN_H    = 140
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -50,9 +59,14 @@ class OverlayWindow:
 
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        w = max(620, min(1080, int(sw * self.W_FRAC)))
-        self._w, self._sw, self._sh = w, sw, sh
-        self._reposition(w, self.HEIGHT)
+        self._sw, self._sh = sw, sh
+        saved = self._load_geometry()
+        if saved:
+            w, h, x, y = saved
+            self.root.geometry(f"{w}x{h}+{x}+{y}")
+        else:
+            w = max(620, min(1080, int(sw * self.W_FRAC)))
+            self._reposition(w, self.HEIGHT)
 
         # 1-px border effect via a Frame
         inner = tk.Frame(self.root, bg=self.BG)
@@ -68,7 +82,21 @@ class OverlayWindow:
             spacing1=3, spacing3=3,
             selectbackground=self.BG,
         )
-        self._txt.pack(fill=tk.BOTH, expand=True, pady=(30, 0))
+        self._txt.pack(fill=tk.BOTH, expand=True, pady=(30, 8))
+
+        # Progress bar — a thin accent line along the bottom edge
+        track = tk.Frame(inner, height=3, bg="#2a2e42")
+        track.place(relx=0.0, rely=1.0, relwidth=1.0, anchor="sw")
+        self._bar = tk.Frame(track, bg=self.HL_BG)
+        self._bar.place(x=0, y=0, relheight=1.0, relwidth=0.0)
+
+        # Progress readout — "sentence 4 of 12 · ~35s left", top-centre
+        self._prog = tk.Label(
+            inner, text="",
+            font=(self.FONT_FAM, 9),
+            bg=self.BG, fg="#6272a4",
+        )
+        self._prog.place(relx=0.5, rely=0.0, anchor="n", y=8)
         self._txt.tag_configure(
             "hl", background=self.HL_BG, foreground=self.HL_FG,
         )
@@ -86,10 +114,22 @@ class OverlayWindow:
         close.bind("<Enter>", lambda e: close.configure(fg="#f7768e"))
         close.bind("<Leave>", lambda e: close.configure(fg="#6272a4"))
 
-        # Transport buttons — top-left corner. ⏯ mirrors the daemon's state
-        # (STATE:paused / STATE:playing messages).
+        # Move handle — far left of the header strip. The whole header (and any
+        # empty area) drags too; this is the visible affordance for it.
+        move = tk.Label(
+            inner, text="✥",
+            font=(self.FONT_FAM, 11),
+            bg=self.BG, fg="#6272a4",
+            cursor="fleur",
+        )
+        move.place(x=10, y=6)
+        move.bind("<Enter>", lambda e: move.configure(fg="#7aa2f7"))
+        move.bind("<Leave>", lambda e: move.configure(fg="#6272a4"))
+
+        # Transport buttons — right of the move handle. ⏯ mirrors the daemon's
+        # state (STATE:paused / STATE:playing messages).
         self._btn_pause = None
-        x = 12
+        x = 38
         for glyph, cmd in (("⏮", config.CTRL_PREV),
                            ("⏸", config.CTRL_PAUSE),
                            ("⏭", config.CTRL_NEXT)):
@@ -117,13 +157,32 @@ class OverlayWindow:
         )
         hint.place(relx=1.0, rely=0.0, anchor="ne", x=-34, y=8)
 
+        # Resize grip — bottom-right corner. Its handlers return "break" so the
+        # window-level drag bindings below don't also move the window.
+        grip = tk.Label(
+            inner, text="◢",
+            font=(self.FONT_FAM, 8),
+            bg=self.BG, fg="#414868",
+            cursor="size_nw_se",
+        )
+        grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-5)
+        grip.bind("<Button-1>", self._resize_start)
+        grip.bind("<B1-Motion>", self._resize_move)
+        grip.bind("<ButtonRelease-1>", self._resize_end)
+
         # Drag support; a release without movement on the text is a seek-click.
-        for w in (self.root, inner, self._txt):
-            w.bind("<Button-1>", self._drag_start)
-            w.bind("<B1-Motion>", self._drag_move)
+        # Bind ONLY on root — it receives events from every child via bindtags.
+        # Binding on children too would run each handler twice per event, and
+        # the second run (stale winfo_x, zero delta) undoes the move.
+        self.root.bind("<Button-1>", self._drag_start)
+        self.root.bind("<B1-Motion>", self._drag_move)
         self._txt.bind("<ButtonRelease-1>", self._txt_release)
+        self.root.bind("<ButtonRelease-1>", lambda e: self._save_geometry())
+        self.root.bind("<MouseWheel>", self._on_wheel)
         self._dx = self._dy = 0
+        self._ox = self._oy = 0  # window origin at drag start
         self._px = self._py = 0  # press origin, to tell a click from a drag
+        self._rw = self._rh = self._rx = self._ry = 0  # resize-drag state
 
         self._alpha   = 0.0
         self._fade_id = None
@@ -132,11 +191,72 @@ class OverlayWindow:
 
         threading.Thread(target=self._serve, daemon=True).start()
 
-    # ── positioning ──────────────────────────────────────────────────────
+    # ── positioning / geometry persistence ───────────────────────────────
     def _reposition(self, w: int, h: int) -> None:
         x = (self._sw - w) // 2
         y = (self._sh - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _load_geometry(self):
+        """Last saved size+position, or None if absent or fully off-screen.
+
+        Validated against the Windows virtual desktop (all monitors), so a
+        position on a second screen is kept — but a stale one from a monitor
+        that is no longer connected falls back to centred-on-primary.
+        """
+        try:
+            m = re.fullmatch(
+                r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", GEOM_FILE.read_text().strip()
+            )
+            if not m:
+                return None
+            w, h = max(self.MIN_W, int(m[1])), max(self.MIN_H, int(m[2]))
+            x, y = int(m[3]), int(m[4])
+            try:
+                import ctypes
+                u = ctypes.windll.user32
+                vx, vy = u.GetSystemMetrics(76), u.GetSystemMetrics(77)
+                vw, vh = u.GetSystemMetrics(78), u.GetSystemMetrics(79)
+                margin = 40  # this much of the window must remain reachable
+                if (x + w < vx + margin or x > vx + vw - margin
+                        or y + h < vy + margin or y > vy + vh - margin):
+                    return None
+            except AttributeError:
+                pass  # non-Windows: accept as-is
+            return w, h, x, y
+        except (OSError, ValueError):
+            return None
+
+    def _save_geometry(self) -> None:
+        try:
+            config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            GEOM_FILE.write_text(
+                f"{self.root.winfo_width()}x{self.root.winfo_height()}"
+                f"+{self.root.winfo_x()}+{self.root.winfo_y()}"
+            )
+        except OSError:
+            pass
+
+    # ── resize grip ───────────────────────────────────────────────────────
+    def _resize_start(self, e: tk.Event):
+        self._rw, self._rh = self.root.winfo_width(), self.root.winfo_height()
+        self._rx, self._ry = e.x_root, e.y_root
+        return "break"
+
+    def _resize_move(self, e: tk.Event):
+        w = max(self.MIN_W, self._rw + e.x_root - self._rx)
+        h = max(self.MIN_H, self._rh + e.y_root - self._ry)
+        self.root.geometry(f"{w}x{h}")
+        return "break"
+
+    def _resize_end(self, e: tk.Event):
+        self._save_geometry()
+        return "break"
+
+    # ── scrolling ─────────────────────────────────────────────────────────
+    def _on_wheel(self, e: tk.Event):
+        self._txt.yview_scroll(-e.delta // 2, "pixels")
+        return "break"
 
     # ── daemon commands ───────────────────────────────────────────────────
     def _close_clicked(self) -> None:
@@ -159,12 +279,14 @@ class OverlayWindow:
     def _drag_start(self, e: tk.Event) -> None:
         self._dx, self._dy = e.x_root, e.y_root
         self._px, self._py = e.x_root, e.y_root
+        self._ox, self._oy = self.root.winfo_x(), self.root.winfo_y()
 
     def _drag_move(self, e: tk.Event) -> None:
-        x = self.root.winfo_x() + e.x_root - self._dx
-        y = self.root.winfo_y() + e.y_root - self._dy
+        # Absolute maths from the drag-start origin: idempotent, so a repeated
+        # delivery of the same event can't undo the move.
+        x = self._ox + e.x_root - self._dx
+        y = self._oy + e.y_root - self._dy
         self.root.geometry(f"+{x}+{y}")
-        self._dx, self._dy = e.x_root, e.y_root
 
     def _txt_release(self, e: tk.Event) -> None:
         if abs(e.x_root - self._px) + abs(e.y_root - self._py) > 4:
@@ -226,15 +348,30 @@ class OverlayWindow:
         elif line.startswith("STATE:"):
             state = line[6:]
             self.root.after(0, lambda s=state: self._set_state(s))
+        elif line.startswith("PROG:"):
+            try:
+                cur, total, frac, secs = line[5:].split(":")
+                cur, total, frac, secs = int(cur), int(total), float(frac), int(secs)
+            except ValueError:
+                return
+            self.root.after(0, lambda: self._set_progress(cur, total, frac, secs))
 
     # ── UI updates (main thread only) ─────────────────────────────────────
     def _set_state(self, state: str) -> None:
         if self._btn_pause is not None:
             self._btn_pause.configure(text="▶" if state == "paused" else "⏸")
 
+    def _set_progress(self, cur: int, total: int, frac: float, secs: int) -> None:
+        mins, s = divmod(max(0, secs), 60)
+        left = f"{mins}:{s:02d}" if mins else f"{s}s"
+        self._prog.configure(text=f"sentence {cur} of {total}  ·  ~{left} left")
+        self._bar.place_configure(relwidth=max(0.0, min(1.0, frac)))
+
     def _show(self, text: str) -> None:
         self._full = text
         self._from = 0
+        self._prog.configure(text="")
+        self._bar.place_configure(relwidth=0.0)
         self._txt.configure(state=tk.NORMAL)
         self._txt.delete("1.0", tk.END)
         self._txt.insert("1.0", text)
@@ -255,7 +392,21 @@ class OverlayWindow:
         si = f"1.0+{pos}c"
         ei = f"1.0+{end}c"
         self._txt.tag_add("hl", si, ei)
-        self._txt.see(si)
+        self._center(si)
+
+    def _center(self, si: str) -> None:
+        """Scroll so the highlighted sentence sits in the middle of the view."""
+        try:
+            self._txt.update_idletasks()
+            y = (self._txt.count("1.0", si, "ypixels") or (0,))[0]
+            total = (self._txt.count("1.0", "end", "ypixels") or (0,))[0]
+            h = self._txt.winfo_height()
+            if total > h > 0:
+                self._txt.yview_moveto(max(0.0, y - h / 2) / total)
+            else:
+                self._txt.yview_moveto(0.0)
+        except tk.TclError:
+            self._txt.see(si)
 
     # ── fade animations ───────────────────────────────────────────────────
     def _cancel_fade(self) -> None:

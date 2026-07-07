@@ -25,6 +25,7 @@ import base64
 import ctypes
 import importlib
 import logging
+import math
 import os
 import queue
 import socket
@@ -271,6 +272,9 @@ class TTSDaemon:
                         return
                 if piece:
                     self._overlay_send(f"SPEAK:{b64(piece)}")
+                with tr.cond:
+                    prog = self._progress_msg(tr, len(text))
+                self._overlay_send(prog)
                 result = self._play_chunk(samples, sr, tr)
                 if result == "abort":
                     return
@@ -329,6 +333,28 @@ class TTSDaemon:
         except Exception as e:
             log.warning("Playback failed: %s", e)
         return "done"
+
+    @staticmethod
+    def _progress_msg(tr: Transport, text_len: int) -> str:
+        """Build a PROG:<cur>:<total>:<frac>:<secs-left> line (tr.cond held).
+
+        Durations of synthesized chunks are exact (samples / rate); text not
+        yet synthesized is estimated from the speaking rate observed so far.
+        While the producer is still running, `total` is likewise an estimate
+        from the average chunk length; it settles once synthesis finishes.
+        """
+        idx = min(tr.idx, len(tr.chunks) - 1)
+        durs = [len(c[0]) / c[1] for c in tr.chunks]
+        synth_end = max(c[4] for c in tr.chunks)
+        remaining = sum(durs[idx:])
+        total = len(tr.chunks)
+        if not tr.done and 0 < synth_end < text_len:
+            rate = sum(durs) / synth_end  # seconds per char so far
+            remaining += (text_len - synth_end) * rate
+            avg_chars = synth_end / len(tr.chunks)
+            total += max(0, math.ceil((text_len - synth_end) / avg_chars))
+        frac = tr.chunks[idx][3] / text_len if text_len else 0.0
+        return f"PROG:{idx + 1}:{total}:{frac:.3f}:{int(round(remaining))}"
 
     # --- transport controls --------------------------------------------------
     def toggle_pause(self) -> None:

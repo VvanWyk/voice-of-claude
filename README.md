@@ -13,13 +13,19 @@ spacebar). This project adds the missing half: voice *output*.
 - **Streaming audio** — synthesis and playback overlap so speech starts on the
   first sentence while the rest is being generated.
 - **Karaoke overlay** — a borderless always-on-top window shows the full reply
-  and highlights each sentence as it is spoken. Draggable. Press **ESC** to
-  stop playback and dismiss, or use the ✕ button.
+  and highlights each sentence as it is spoken, auto-scrolled to the middle of
+  the view (mouse wheel scrolls manually). Draggable, resizable via the ◢ grip,
+  and it remembers its size and position across runs — on any monitor. Press
+  **ESC** to stop playback and dismiss, or use the ✕ button.
 - **Transport controls** — pause/resume, skip forward/back a sentence, and
   **click any sentence in the overlay to jump straight to it**. Global hotkeys
   (work whatever window has focus): `Ctrl+Alt+Space` pause/resume,
   `Ctrl+Alt+→` / `Ctrl+Alt+←` skip, `ESC` stop. The overlay has matching
   ⏮ ⏯ ⏭ buttons.
+- **Progress indicator** — a thin bar along the overlay's bottom edge plus a
+  "sentence 4 of 12 · ~35s left" readout. Sentence durations are exact for
+  synthesized audio; the not-yet-synthesized remainder is estimated from the
+  speaking rate observed so far.
 - **Attention chime** — a short sound plays when Claude needs your input
   (permission prompt or `AskUserQuestion`), instead of interrupting the current
   reply.
