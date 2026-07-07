@@ -16,7 +16,9 @@ spacebar). This project adds the missing half: voice *output*.
   and highlights each sentence as it is spoken, auto-scrolled to the middle of
   the view (mouse wheel scrolls manually). Draggable, resizable via the ◢ grip,
   and it remembers its size and position across runs — on any monitor. Press
-  **ESC** to stop playback and dismiss, or use the ✕ button.
+  **ESC** to stop playback and dismiss, or use the ✕ button. The – button
+  collapses it to a compact one-line **pill** showing only the sentence being
+  spoken (▢ expands back; the mode is remembered too).
 - **Transport controls** — pause/resume, skip forward/back a sentence, and
   **click any sentence in the overlay to jump straight to it**. Global hotkeys
   (work whatever window has focus): `Ctrl+Alt+Space` pause/resume,

@@ -10,11 +10,12 @@ TTS_OVERLAY_PORT (default 7767) for newline-terminated commands:
 
 The window is borderless, always-on-top, draggable, resizable via the ◢ grip
 (bottom-right) and scrollable with the mouse wheel; the spoken sentence is
-auto-centred in the view. Size and position persist across runs in
-.state/overlay_geometry.txt (any monitor; falls back to centred-on-primary if
-the saved spot is no longer on-screen). Transport buttons (⏮ ⏯ ⏭ ✕) and
-click-a-sentence-to-seek send commands back to the daemon on TTS_PORT.
-Set TTS_OVERLAY=0 to disable.
+auto-centred in the view. The – button collapses to a one-line "pill" showing
+only the current sentence (▢ expands back). Size, position and pill mode
+persist across runs in .state/overlay_geometry.txt (any monitor; falls back
+to centred-on-primary if the saved spot is no longer on-screen). Transport
+buttons (⏮ ⏯ ⏭ ✕) and click-a-sentence-to-seek send commands back to the
+daemon on TTS_PORT. Set TTS_OVERLAY=0 to disable.
 """
 from __future__ import annotations
 
@@ -48,6 +49,7 @@ class OverlayWindow:
     ALPHA    = 0.93
     MIN_W    = 380
     MIN_H    = 140
+    PILL_H   = 46
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -60,13 +62,20 @@ class OverlayWindow:
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         self._sw, self._sh = sw, sh
+        self._pill = False
+        self._full_h = self.HEIGHT  # height to restore when leaving pill mode
+        start_pill = False
         saved = self._load_geometry()
         if saved:
-            w, h, x, y = saved
+            w, h, x, y, start_pill = saved
+            self._full_h = h
             self.root.geometry(f"{w}x{h}+{x}+{y}")
         else:
             w = max(620, min(1080, int(sw * self.W_FRAC)))
             self._reposition(w, self.HEIGHT)
+        # winfo_width() reads 1 until the window is mapped, so keep the
+        # intended width ourselves for geometry calls made before/around that.
+        self._win_w = w
 
         # 1-px border effect via a Frame
         inner = tk.Frame(self.root, bg=self.BG)
@@ -83,6 +92,13 @@ class OverlayWindow:
             selectbackground=self.BG,
         )
         self._txt.pack(fill=tk.BOTH, expand=True, pady=(30, 8))
+
+        # Pill-mode label — one line, current sentence only (packed on demand)
+        self._pill_lbl = tk.Label(
+            inner, text="", anchor="w",
+            font=(self.FONT_FAM, 12),
+            bg=self.BG, fg=self.FG,
+        )
 
         # Progress bar — a thin accent line along the bottom edge
         track = tk.Frame(inner, height=3, bg="#2a2e42")
@@ -147,28 +163,40 @@ class OverlayWindow:
                 self._btn_pause = btn
             x += 26
 
-        # Keyboard shortcut hint — left of the close button
-        hint = tk.Label(
+        # Pill-mode toggle — collapses to a one-line strip and back
+        self._btn_mode = tk.Label(
+            inner, text="–",
+            font=(self.FONT_FAM, 11),
+            bg=self.BG, fg="#6272a4",
+            cursor="hand2",
+        )
+        self._btn_mode.place(relx=1.0, rely=0.0, anchor="ne", x=-32, y=6)
+        self._btn_mode.bind("<Button-1>", lambda e: self._set_pill(not self._pill))
+        self._btn_mode.bind("<Enter>", lambda e: self._btn_mode.configure(fg="#7aa2f7"))
+        self._btn_mode.bind("<Leave>", lambda e: self._btn_mode.configure(fg="#6272a4"))
+
+        # Keyboard shortcut hint — left of the mode/close buttons
+        self._hint = tk.Label(
             inner,
             text="Ctrl+Alt+Space pause  ·  Ctrl+Alt+←/→ skip  ·  ESC stop",
             font=(self.FONT_FAM, 9),
             bg=self.BG, fg="#6272a4",
             cursor="arrow",
         )
-        hint.place(relx=1.0, rely=0.0, anchor="ne", x=-34, y=8)
+        self._hint.place(relx=1.0, rely=0.0, anchor="ne", x=-56, y=8)
 
         # Resize grip — bottom-right corner. Its handlers return "break" so the
         # window-level drag bindings below don't also move the window.
-        grip = tk.Label(
+        self._grip = tk.Label(
             inner, text="◢",
             font=(self.FONT_FAM, 8),
             bg=self.BG, fg="#414868",
             cursor="size_nw_se",
         )
-        grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-5)
-        grip.bind("<Button-1>", self._resize_start)
-        grip.bind("<B1-Motion>", self._resize_move)
-        grip.bind("<ButtonRelease-1>", self._resize_end)
+        self._grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-5)
+        self._grip.bind("<Button-1>", self._resize_start)
+        self._grip.bind("<B1-Motion>", self._resize_move)
+        self._grip.bind("<ButtonRelease-1>", self._resize_end)
 
         # Drag support; a release without movement on the text is a seek-click.
         # Bind ONLY on root — it receives events from every child via bindtags.
@@ -189,6 +217,9 @@ class OverlayWindow:
         self._full    = ""
         self._from    = 0
 
+        if start_pill:
+            self._set_pill(True)
+
         threading.Thread(target=self._serve, daemon=True).start()
 
     # ── positioning / geometry persistence ───────────────────────────────
@@ -205,11 +236,11 @@ class OverlayWindow:
         that is no longer connected falls back to centred-on-primary.
         """
         try:
-            m = re.fullmatch(
-                r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", GEOM_FILE.read_text().strip()
-            )
+            lines = GEOM_FILE.read_text().strip().splitlines()
+            m = re.fullmatch(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", lines[0].strip())
             if not m:
                 return None
+            pill = len(lines) > 1 and lines[1].strip() == "pill"
             w, h = max(self.MIN_W, int(m[1])), max(self.MIN_H, int(m[2]))
             x, y = int(m[3]), int(m[4])
             try:
@@ -223,19 +254,57 @@ class OverlayWindow:
                     return None
             except AttributeError:
                 pass  # non-Windows: accept as-is
-            return w, h, x, y
-        except (OSError, ValueError):
+            return w, h, x, y, pill
+        except (OSError, ValueError, IndexError):
             return None
 
     def _save_geometry(self) -> None:
+        if self.root.winfo_width() <= 1:
+            return  # not mapped yet - winfo would record a bogus 1x1+0+0
         try:
             config.STATE_DIR.mkdir(parents=True, exist_ok=True)
-            GEOM_FILE.write_text(
-                f"{self.root.winfo_width()}x{self.root.winfo_height()}"
+            # Always record the FULL-mode height so leaving pill mode (now or
+            # next run) restores the real size; a second line flags pill mode.
+            h = self._full_h if self._pill else self.root.winfo_height()
+            data = (
+                f"{self.root.winfo_width()}x{h}"
                 f"+{self.root.winfo_x()}+{self.root.winfo_y()}"
             )
+            if self._pill:
+                data += "\npill"
+            GEOM_FILE.write_text(data)
         except OSError:
             pass
+
+    # ── pill mode ─────────────────────────────────────────────────────────
+    def _set_pill(self, pill: bool) -> None:
+        """Collapse to a one-line strip with the current sentence, or expand."""
+        if pill == self._pill:
+            return
+        self._pill = pill
+        w = self.root.winfo_width()
+        if w > 1:
+            self._win_w = w
+        if pill:
+            h = self.root.winfo_height()
+            if h > self.PILL_H + 10:  # ignore the pre-map 1px default
+                self._full_h = h
+            self._txt.pack_forget()
+            self._prog.place_forget()
+            self._hint.place_forget()
+            self._grip.place_forget()
+            self._pill_lbl.pack(fill=tk.X, expand=True, padx=(96, 56))
+            self.root.geometry(f"{self._win_w}x{self.PILL_H}")
+            self._btn_mode.configure(text="▢")
+        else:
+            self._pill_lbl.pack_forget()
+            self._txt.pack(fill=tk.BOTH, expand=True, pady=(30, 8))
+            self._prog.place(relx=0.5, rely=0.0, anchor="n", y=8)
+            self._hint.place(relx=1.0, rely=0.0, anchor="ne", x=-56, y=8)
+            self._grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-5)
+            self.root.geometry(f"{self._win_w}x{self._full_h}")
+            self._btn_mode.configure(text="–")
+        self._save_geometry()
 
     # ── resize grip ───────────────────────────────────────────────────────
     def _resize_start(self, e: tk.Event):
@@ -246,6 +315,7 @@ class OverlayWindow:
     def _resize_move(self, e: tk.Event):
         w = max(self.MIN_W, self._rw + e.x_root - self._rx)
         h = max(self.MIN_H, self._rh + e.y_root - self._ry)
+        self._win_w = w
         self.root.geometry(f"{w}x{h}")
         return "break"
 
@@ -372,6 +442,7 @@ class OverlayWindow:
         self._from = 0
         self._prog.configure(text="")
         self._bar.place_configure(relwidth=0.0)
+        self._pill_lbl.configure(text="…")
         self._txt.configure(state=tk.NORMAL)
         self._txt.delete("1.0", tk.END)
         self._txt.insert("1.0", text)
@@ -381,6 +452,7 @@ class OverlayWindow:
         self._fade_in()
 
     def _highlight(self, chunk: str) -> None:
+        self._pill_lbl.configure(text=chunk)
         pos = self._full.find(chunk, self._from)
         if pos == -1:
             pos = self._full.find(chunk)
