@@ -13,8 +13,11 @@ spacebar). This project adds the missing half: voice *output*.
 - **Streaming audio** — synthesis and playback overlap so speech starts on the
   first sentence while the rest is being generated.
 - **Karaoke overlay** — a borderless always-on-top window shows the full reply
-  and highlights each sentence as it is spoken, auto-scrolled to the middle of
-  the view (mouse wheel scrolls manually). Draggable, resizable via the ◢ grip,
+  and highlights each sentence as it is spoken, with a **word-level highlight
+  sweeping across it in time with the audio** (word timings are proportional
+  to word length within the chunk's exact audio duration, resynced every
+  sentence). Auto-scrolled to the middle of the view (mouse wheel scrolls
+  manually). Draggable, resizable via the ◢ grip,
   and it remembers its size and position across runs — on any monitor. Press
   **ESC** to stop playback and dismiss, or use the ✕ button. The – button
   collapses it to a compact one-line **pill** showing only the sentence being
@@ -163,6 +166,7 @@ before the reply is spoken.
 | `TTS_LANG` | `en-us` | Language for Kokoro phonemisation |
 | `TTS_OVERLAY` | `1` | `0` = disable the karaoke overlay |
 | `TTS_OVERLAY_PORT` | `7767` | Overlay localhost port |
+| `TTS_SWEEP_OFFSET_MS` | `200` | Word-sweep trim for unreported audio latency: raise if the highlight runs ahead of the voice, lower if it lags |
 | `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
 
 Changes to engine, voice or device need a daemon restart:

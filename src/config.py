@@ -103,6 +103,10 @@ INTERRUPT_VK = _env_int("TTS_INTERRUPT_VK", 0x1B)
 # Set TTS_OVERLAY=0 to disable entirely.
 OVERLAY = _env_bool("TTS_OVERLAY", True)
 OVERLAY_PORT = _env_int("TTS_OVERLAY_PORT", 7767)
+# Extra delay (ms) added to the word-sweep start to cover output latency the
+# audio stack doesn't report (WASAPI shared-mode mixer buffering). Raise if the
+# highlight runs ahead of the voice, lower (or negative) if it lags behind.
+SWEEP_OFFSET_MS = _env_int("TTS_SWEEP_OFFSET_MS", 200)
 
 # --- Which events to speak --------------------------------------------------
 # Stop (the finished reply) is always spoken. These add the other moments where

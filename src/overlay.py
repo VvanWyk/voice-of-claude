@@ -3,8 +3,11 @@
 Started alongside the TTS daemon by launch_server.py. Listens on
 TTS_OVERLAY_PORT (default 7767) for newline-terminated commands:
   SHOW:<base64>   – display the overlay with the full reply text
-  SPEAK:<base64>  – highlight this chunk in the displayed text
-  STATE:<name>    – transport state ("paused" / "playing") for the ⏯ button
+  SPEAK:<base64>[:<total>:<lead>:<voiced>] – highlight this chunk; the ms
+                    durations drive a word-level sweep that waits out the
+                    leading silence and spans only the voiced audio
+  STATE:<name>    – transport state ("paused" / "playing"); also freezes and
+                    resumes the word sweep
   PROG:<cur>:<total>:<frac>:<secs> – progress bar + "sentence 4 of 12" readout
   HIDE            – fade out and hide the window
 
@@ -25,6 +28,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -40,6 +44,7 @@ class OverlayWindow:
     FG       = "#c0caf5"
     HL_BG    = "#e0af68"
     HL_FG    = "#1a1b26"
+    WORD_BG  = "#ff9e64"
     BORDER   = "#414868"
     FONT_FAM = "Segoe UI"
     FONT_SZ  = 13
@@ -93,11 +98,18 @@ class OverlayWindow:
         )
         self._txt.pack(fill=tk.BOTH, expand=True, pady=(30, 8))
 
-        # Pill-mode label — one line, current sentence only (packed on demand)
-        self._pill_lbl = tk.Label(
-            inner, text="", anchor="w",
+        # Pill-mode line — a one-line Text (not a Label) so the current word
+        # can be highlighted and kept centred. Packed on demand.
+        self._pill_txt = tk.Text(
+            inner, height=1, wrap=tk.NONE,
             font=(self.FONT_FAM, 12),
             bg=self.BG, fg=self.FG,
+            relief=tk.FLAT, bd=0, highlightthickness=0,
+            state=tk.DISABLED, cursor="arrow",
+            selectbackground=self.BG,
+        )
+        self._pill_txt.tag_configure(
+            "word", background=self.WORD_BG, foreground=self.HL_FG,
         )
 
         # Progress bar — a thin accent line along the bottom edge
@@ -115,6 +127,10 @@ class OverlayWindow:
         self._prog.place(relx=0.5, rely=0.0, anchor="n", y=8)
         self._txt.tag_configure(
             "hl", background=self.HL_BG, foreground=self.HL_FG,
+        )
+        # Configured after "hl" so the word highlight renders on top of it.
+        self._txt.tag_configure(
+            "word", background=self.WORD_BG, foreground=self.HL_FG,
         )
 
         # Close button — top-right corner, stops playback and hides the overlay
@@ -212,10 +228,13 @@ class OverlayWindow:
         self._px = self._py = 0  # press origin, to tell a click from a drag
         self._rw = self._rh = self._rx = self._ry = 0  # resize-drag state
 
-        self._alpha   = 0.0
-        self._fade_id = None
-        self._full    = ""
-        self._from    = 0
+        self._alpha    = 0.0
+        self._fade_id  = None
+        self._full     = ""
+        self._from     = 0
+        self._paused   = False
+        self._sweep    = None  # word-karaoke sweep state
+        self._sweep_id = None
 
         if start_pill:
             self._set_pill(True)
@@ -293,11 +312,11 @@ class OverlayWindow:
             self._prog.place_forget()
             self._hint.place_forget()
             self._grip.place_forget()
-            self._pill_lbl.pack(fill=tk.X, expand=True, padx=(96, 56))
+            self._pill_txt.pack(fill=tk.X, expand=True, padx=(96, 56))
             self.root.geometry(f"{self._win_w}x{self.PILL_H}")
             self._btn_mode.configure(text="▢")
         else:
-            self._pill_lbl.pack_forget()
+            self._pill_txt.pack_forget()
             self._txt.pack(fill=tk.BOTH, expand=True, pady=(30, 8))
             self._prog.place(relx=0.5, rely=0.0, anchor="n", y=8)
             self._hint.place(relx=1.0, rely=0.0, anchor="ne", x=-56, y=8)
@@ -413,8 +432,19 @@ class OverlayWindow:
             text = base64.b64decode(line[5:]).decode("utf-8")
             self.root.after(0, lambda t=text: self._show(t))
         elif line.startswith("SPEAK:"):
-            chunk = base64.b64decode(line[6:]).decode("utf-8")
-            self.root.after(0, lambda c=chunk: self._highlight(c))
+            payload = line[6:].split(":")  # base64 has no ":", so this is safe
+            chunk = base64.b64decode(payload[0]).decode("utf-8")
+            nums = []
+            for part in payload[1:4]:
+                try:
+                    nums.append(int(part))
+                except ValueError:
+                    break
+            dur_ms = nums[0] if len(nums) > 0 else 0
+            lead_ms = nums[1] if len(nums) > 1 else 0
+            voice_ms = nums[2] if len(nums) > 2 else max(0, dur_ms - lead_ms)
+            self.root.after(0, lambda c=chunk, l=lead_ms, v=voice_ms:
+                            self._highlight(c, l, v))
         elif line.startswith("STATE:"):
             state = line[6:]
             self.root.after(0, lambda s=state: self._set_state(s))
@@ -428,8 +458,9 @@ class OverlayWindow:
 
     # ── UI updates (main thread only) ─────────────────────────────────────
     def _set_state(self, state: str) -> None:
+        self._paused = state == "paused"
         if self._btn_pause is not None:
-            self._btn_pause.configure(text="▶" if state == "paused" else "⏸")
+            self._btn_pause.configure(text="▶" if self._paused else "⏸")
 
     def _set_progress(self, cur: int, total: int, frac: float, secs: int) -> None:
         mins, s = divmod(max(0, secs), 60)
@@ -437,12 +468,19 @@ class OverlayWindow:
         self._prog.configure(text=f"sentence {cur} of {total}  ·  ~{left} left")
         self._bar.place_configure(relwidth=max(0.0, min(1.0, frac)))
 
+    def _pill_set(self, text: str) -> None:
+        self._pill_txt.configure(state=tk.NORMAL)
+        self._pill_txt.delete("1.0", tk.END)
+        self._pill_txt.insert("1.0", text)
+        self._pill_txt.configure(state=tk.DISABLED)
+
     def _show(self, text: str) -> None:
+        self._cancel_sweep()
         self._full = text
         self._from = 0
         self._prog.configure(text="")
         self._bar.place_configure(relwidth=0.0)
-        self._pill_lbl.configure(text="…")
+        self._pill_set("…")
         self._txt.configure(state=tk.NORMAL)
         self._txt.delete("1.0", tk.END)
         self._txt.insert("1.0", text)
@@ -451,12 +489,13 @@ class OverlayWindow:
         self._txt.yview_moveto(0.0)
         self._fade_in()
 
-    def _highlight(self, chunk: str) -> None:
-        self._pill_lbl.configure(text=chunk)
+    def _highlight(self, chunk: str, lead_ms: int = 0, voice_ms: int = 0) -> None:
+        self._pill_set(chunk)
         pos = self._full.find(chunk, self._from)
         if pos == -1:
             pos = self._full.find(chunk)
         if pos == -1:
+            self._cancel_sweep()
             return
         end = pos + len(chunk)
         self._from = end
@@ -465,6 +504,94 @@ class OverlayWindow:
         ei = f"1.0+{end}c"
         self._txt.tag_add("hl", si, ei)
         self._center(si)
+        self._start_sweep(pos, chunk, lead_ms, voice_ms)
+
+    # ── word-level karaoke sweep ──────────────────────────────────────────
+    def _cancel_sweep(self) -> None:
+        if self._sweep_id:
+            self.root.after_cancel(self._sweep_id)
+            self._sweep_id = None
+        self._sweep = None
+        self._txt.tag_remove("word", "1.0", tk.END)
+        self._pill_txt.tag_remove("word", "1.0", tk.END)
+
+    def _start_sweep(self, base: int, chunk: str, lead_ms: int, voice_ms: int) -> None:
+        """Sweep the word highlight across `chunk` in time with the audio.
+
+        The sweep waits out the chunk's leading silence (`lead_ms`) so the
+        first word lights up when it is actually spoken, then distributes the
+        voiced span (`voice_ms`) across the words proportionally to length
+        (+1 char for the following gap). Drift cannot accumulate: every new
+        sentence restarts the sweep from the real audio clock.
+        """
+        self._cancel_sweep()
+        if voice_ms <= 0:
+            return
+        words = [(m.start(), m.end()) for m in re.finditer(r"\S+", chunk)]
+        if not words:
+            return
+        weight = sum((e - s) + 1 for s, e in words)
+        spans, t = [], float(lead_ms)
+        for s, e in words:
+            dt = ((e - s) + 1) / weight * voice_ms
+            spans.append((s, e, t, t + dt))
+            t += dt
+        self._sweep = {
+            "base": base, "spans": spans, "dur": t,
+            "t0": time.monotonic(), "elapsed": 0.0, "i": -1,
+        }
+        self._sweep_tick()
+
+    def _sweep_tick(self) -> None:
+        sw = self._sweep
+        if sw is None:
+            return
+        now = time.monotonic()
+        if self._paused:
+            sw["t0"] = now - sw["elapsed"] / 1000.0  # freeze the clock
+        else:
+            sw["elapsed"] = (now - sw["t0"]) * 1000.0
+        el = sw["elapsed"]
+        cur = None
+        for j, (_s, _e, ts, te) in enumerate(sw["spans"]):
+            if ts <= el < te:
+                cur = j
+                break
+        if cur is None and el >= sw["dur"]:
+            cur = len(sw["spans"]) - 1
+        if cur is not None and cur != sw["i"]:
+            sw["i"] = cur
+            s, e, _, _ = sw["spans"][cur]
+            self._word_tag(sw["base"] + s, sw["base"] + e, s, e)
+        if el < sw["dur"]:
+            self._sweep_id = self.root.after(30, self._sweep_tick)
+        else:
+            self._sweep_id = None
+
+    def _word_tag(self, abs_s: int, abs_e: int, rel_s: int, rel_e: int) -> None:
+        self._txt.tag_remove("word", "1.0", tk.END)
+        self._txt.tag_add("word", f"1.0+{abs_s}c", f"1.0+{abs_e}c")
+        self._pill_txt.tag_remove("word", "1.0", tk.END)
+        self._pill_txt.tag_add("word", f"1.0+{rel_s}c", f"1.0+{rel_e}c")
+        if self._pill:
+            self._pill_center(rel_s, rel_e)
+
+    def _pill_center(self, s: int, e: int) -> None:
+        """Keep the highlighted word horizontally centred in the pill line."""
+        try:
+            # "1.0 lineend", not "end": measuring across the trailing newline
+            # yields 0 and the view would never move.
+            total = (self._pill_txt.count("1.0", "1.0 lineend", "xpixels") or (0,))[0]
+            left = (self._pill_txt.count("1.0", f"1.0+{s}c", "xpixels") or (0,))[0]
+            wpx = (self._pill_txt.count(f"1.0+{s}c", f"1.0+{e}c", "xpixels") or (0,))[0]
+            vis = self._pill_txt.winfo_width()
+            if total > vis > 0:
+                target = left + wpx / 2 - vis / 2
+                self._pill_txt.xview_moveto(max(0.0, target) / total)
+            else:
+                self._pill_txt.xview_moveto(0.0)
+        except tk.TclError:
+            pass
 
     def _center(self, si: str) -> None:
         """Scroll so the highlighted sentence sits in the middle of the view."""
@@ -498,6 +625,7 @@ class OverlayWindow:
             self._fade_id = self.root.after(16, self._tick_in)
 
     def _fade_out(self) -> None:
+        self._cancel_sweep()
         self._cancel_fade()
         self._alpha = float(self.root.attributes("-alpha"))
         self._tick_out()

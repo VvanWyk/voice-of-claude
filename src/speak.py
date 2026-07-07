@@ -32,36 +32,45 @@ def _send(text: str) -> None:
         s.sendall((line + "\n").encode("utf-8"))
 
 
+def _marker_path(session_id: str):
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", session_id or "default")
+    return config.STATE_DIR / f"last_{safe}.txt"
+
+
 def _already_spoken(session_id: str, uuid: str) -> bool:
-    """Avoid re-speaking the same message if Stop fires more than once."""
+    """True if this message uuid was already sent (Stop can fire twice)."""
     if not uuid:
         return False
-    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", session_id or "default")
-    marker = config.STATE_DIR / f"last_{safe}.txt"
     try:
-        if marker.read_text(encoding="utf-8").strip() == uuid:
-            return True
+        return _marker_path(session_id).read_text(encoding="utf-8").strip() == uuid
     except OSError:
-        pass
-    try:
-        marker.write_text(uuid, encoding="utf-8")
-    except OSError:
-        pass
-    return False
+        return False
 
 
-def _stop_text(payload: dict) -> str:
-    """The finished reply: last assistant message, de-duplicated per session."""
+def _mark_spoken(session_id: str, uuid: str) -> None:
+    """Record the uuid ONLY after a successful send - if the send fails (e.g.
+    the daemon was mid-restart), the next Stop event can retry it."""
+    if not uuid:
+        return
+    try:
+        config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _marker_path(session_id).write_text(uuid, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _stop_text(payload: dict) -> tuple:
+    """(uuid, reply text) of the last assistant message, or ("", "") if it was
+    already spoken (Stop can fire more than once per reply)."""
     transcript_path = payload.get("transcript_path")
     if not transcript_path:
-        return ""
+        return "", ""
     uuid, raw = transcript.last_assistant_message(transcript_path)
     if not raw:
-        return ""
+        return "", ""
     if _already_spoken(payload.get("session_id", ""), uuid):
-        return ""
-    return raw
+        return "", ""
+    return uuid, raw
 
 
 def _notification_text(payload: dict) -> str:
@@ -113,13 +122,14 @@ def main() -> int:
         return 0
 
     event = payload.get("hook_event_name", "")
+    uuid = ""
     if event == "Notification":
         raw = _notification_text(payload)
     elif event == "PreToolUse" and payload.get("tool_name") == "AskUserQuestion":
         raw = _question_text(payload)
     else:
         # Stop (also the fallback when no event name is present).
-        raw = _stop_text(payload)
+        uuid, raw = _stop_text(payload)
 
     text = text_filter.clean(raw, max_chars=config.MAX_CHARS)
     if not text:
@@ -127,9 +137,10 @@ def main() -> int:
 
     try:
         _send(text)
+        _mark_spoken(payload.get("session_id", ""), uuid)
     except OSError:
-        # Daemon not running. SessionStart should have started it; stay silent
-        # rather than block. (See README for manual start.)
+        # Daemon not running or mid-restart. The uuid is intentionally NOT
+        # marked spoken, so the next Stop event retries this reply.
         pass
     return 0
 

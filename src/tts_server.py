@@ -250,7 +250,9 @@ class TTSDaemon:
         threading.Thread(target=_producer, daemon=True).start()
 
         sequential = False  # True when the previous chunk finished naturally
-        try:
+        stream = None       # ONE output stream for the whole reply: opening a
+        stream_key = None   # device per chunk costs 100s of ms on WASAPI and
+        try:                # would run the overlay's word sweep ahead of audio
             while True:
                 with tr.cond:
                     while True:
@@ -270,12 +272,36 @@ class TTSDaemon:
                     self._pause(gap)
                     if self.interrupt.is_set() or self.shutdown.is_set():
                         return
+                data, dtype = self._prep_samples(samples)
+                key = (sr, data.shape[1], dtype)
+                if key != stream_key:
+                    if stream is not None:
+                        try:
+                            stream.abort()
+                            stream.close()
+                        except Exception:
+                            pass
+                    stream = sd.OutputStream(
+                        samplerate=sr, channels=data.shape[1], dtype=dtype,
+                        latency="low",
+                    )
+                    stream.start()
+                    stream_key = key
                 if piece:
-                    self._overlay_send(f"SPEAK:{b64(piece)}")
+                    # SPEAK is sent AFTER the stream is ready, so the overlay's
+                    # word sweep clock starts with the audio. Durations: total,
+                    # leading silence (+ output latency), and the voiced span.
+                    dur_ms = int(len(samples) / sr * 1000)
+                    lead_ms, voice_ms = self._voiced_bounds_ms(samples, sr)
+                    lead_ms += int((getattr(stream, "latency", 0.0) or 0.0) * 1000)
+                    lead_ms = max(0, lead_ms + config.SWEEP_OFFSET_MS)
+                    self._overlay_send(
+                        f"SPEAK:{b64(piece)}:{dur_ms}:{lead_ms}:{voice_ms}"
+                    )
                 with tr.cond:
                     prog = self._progress_msg(tr, len(text))
                 self._overlay_send(prog)
-                result = self._play_chunk(samples, sr, tr)
+                result = self._play_chunk(data, stream, tr)
                 if result == "abort":
                     return
                 if result == "jump":
@@ -285,6 +311,15 @@ class TTSDaemon:
                     if tr.jump is None:
                         tr.idx += 1
         finally:
+            if stream is not None:
+                try:
+                    if self.interrupt.is_set() or self.shutdown.is_set():
+                        stream.abort()   # cut immediately
+                    else:
+                        stream.stop()    # drain the last chunk's tail
+                    stream.close()
+                except Exception:
+                    pass
             self.transport = None
             self._overlay_send("HIDE")
 
@@ -296,43 +331,80 @@ class TTSDaemon:
                 return
             time.sleep(0.02)
 
-    def _play_chunk(self, samples, sr, tr: Transport) -> str:
-        """Play one chunk in ~50 ms blocks so pause/skip/stop react mid-sentence.
-
-        Returns "done" (played to the end), "jump" (a skip/seek moved the
-        cursor) or "abort" (interrupt/shutdown).
-        """
+    @staticmethod
+    def _prep_samples(samples):
+        """(frames, channels) contiguous array + sounddevice dtype string."""
         data = np.ascontiguousarray(samples)
         if data.ndim == 1:
             data = data.reshape(-1, 1)
-        dtype = "int16" if data.dtype == np.int16 else "float32"
-        if dtype == "float32" and data.dtype != np.float32:
+        if data.dtype == np.int16:
+            return data, "int16"
+        if data.dtype != np.float32:
             data = data.astype(np.float32)
-        block = max(1, int(sr * 0.05))
+        return data, "float32"
+
+    def _play_chunk(self, data, stream, tr: Transport) -> str:
+        """Write one chunk in ~50 ms blocks so pause/skip/stop react mid-way.
+
+        The stream is shared across the reply and stays open. Returns "done"
+        (chunk fully written), "jump" (a skip/seek moved the cursor; buffered
+        audio is discarded) or "abort" (interrupt/shutdown).
+        """
+        block = max(1, int(stream.samplerate * 0.05))
         try:
-            with sd.OutputStream(samplerate=sr, channels=data.shape[1], dtype=dtype) as stream:
-                i = 0
-                while i < len(data):
-                    if self.interrupt.is_set() or self.shutdown.is_set():
-                        return "abort"  # close() discards pending audio
-                    if tr.jump is not None:
-                        return "jump"
-                    if tr.paused:
-                        stream.stop()
-                        while tr.paused:
-                            if self.interrupt.is_set() or self.shutdown.is_set():
-                                return "abort"
-                            if tr.jump is not None:
-                                return "jump"
-                            time.sleep(0.03)
-                        stream.start()
-                    stream.write(data[i:i + block])
-                    i += block
-                # Drain the OS buffer so the chunk's tail is not cut off.
-                stream.stop()
+            i = 0
+            while i < len(data):
+                if self.interrupt.is_set() or self.shutdown.is_set():
+                    return "abort"
+                if tr.jump is not None:
+                    self._discard_buffered(stream)
+                    return "jump"
+                if tr.paused:
+                    stream.stop()  # drains the small buffered remainder
+                    while tr.paused:
+                        if self.interrupt.is_set() or self.shutdown.is_set():
+                            return "abort"
+                        if tr.jump is not None:
+                            break
+                        time.sleep(0.03)
+                    stream.start()
+                    continue  # re-check jump/interrupt before writing on
+                stream.write(data[i:i + block])
+                i += block
         except Exception as e:
             log.warning("Playback failed: %s", e)
         return "done"
+
+    @staticmethod
+    def _discard_buffered(stream) -> None:
+        """Drop not-yet-played audio (on skip/seek) and keep the stream usable."""
+        try:
+            stream.abort()
+            stream.start()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _voiced_bounds_ms(samples, sr) -> tuple:
+        """(leading-silence ms, voiced-span ms) of a chunk via energy threshold.
+
+        TTS chunks start with model lead-in silence and end with padding; the
+        overlay's word sweep should only span the audible part.
+        """
+        try:
+            a = np.abs(np.asarray(samples, dtype=np.float32))
+            if samples.dtype == np.int16:
+                a /= 32768.0
+            peak = float(a.max()) if a.size else 0.0
+            total = int(len(samples) / sr * 1000)
+            if peak < 1e-4:
+                return 0, total
+            idx = np.nonzero(a > peak * 0.04)[0]
+            lead = int(idx[0] / sr * 1000)
+            voice = max(1, int((idx[-1] - idx[0] + 1) / sr * 1000))
+            return lead, voice
+        except Exception:
+            return 0, int(len(samples) / sr * 1000)
 
     @staticmethod
     def _progress_msg(tr: Transport, text_len: int) -> str:
