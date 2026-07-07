@@ -44,9 +44,12 @@ spacebar). This project adds the missing half: voice *output*.
   spoken sentences by a fast model (`claude -p --model haiku` subprocess)
   before synthesis; any failure or timeout falls back to the full reply. The
   overlay shows the summary. Off by default.
-- **Self-healing daemon** — the `Stop` hook checks whether the daemon and
-  overlay are running and restarts them if not, so a crashed process recovers
-  automatically on the next reply.
+- **System tray icon** — mute toggle (icon shows a red slash while muted),
+  live Kokoro voice switcher, and stop-speaking, without touching config
+  files. Voice changes apply in place via the daemon's `__RELOAD__` verb.
+- **Self-healing processes** — the `Stop` hook checks the daemon, overlay and
+  tray independently and restarts whichever is missing, so a crashed process
+  recovers automatically on the next reply.
 - **ESC interrupt** — stops playback instantly, polled globally so it works
   regardless of which window has focus.
 
@@ -170,6 +173,8 @@ before the reply is spoken.
 | `TTS_LANG` | `en-us` | Language for Kokoro phonemisation |
 | `TTS_OVERLAY` | `1` | `0` = disable the karaoke overlay |
 | `TTS_OVERLAY_PORT` | `7767` | Overlay localhost port |
+| `TTS_TRAY` | `1` | `0` = disable the system tray icon |
+| `TTS_TRAY_PORT` | `7768` | Tray single-instance lock port |
 | `TTS_SWEEP_OFFSET_MS` | `200` | Word-sweep trim for unreported audio latency: raise if the highlight runs ahead of the voice, lower if it lags |
 | `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
 | `TTS_BELL_IDLE` | `0` | `1` = also chime for the idle "waiting for your input" reminder (~60s after each reply) |
@@ -247,7 +252,8 @@ never hijack normal typing.
 | `src/overlay.py` | Karaoke overlay: sentence highlighting, transport buttons, click-to-seek |
 | `src/speak.py` | Stop / Notification / AskUserQuestion hook client → daemon socket |
 | `src/bell.py` | Attention chime: plays `TTS_BELL_SOUND` WAV or system beep |
-| `src/launch_server.py` | SessionStart / Stop hook: start daemon + overlay if not running |
+| `src/launch_server.py` | SessionStart / Stop hook: start daemon + overlay + tray if not running |
+| `src/tray.py` | System tray icon: mute toggle, voice switcher, stop speaking |
 | `src/transcript.py` | Extract last assistant message from the `.jsonl` transcript |
 | `src/text_filter.py` | Markdown strip, em-dash normalisation, code-block summarising, length cap |
 | `src/config.py` | Env-var driven configuration |

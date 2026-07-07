@@ -1,8 +1,9 @@
-"""Claude Code `SessionStart` hook: ensure the TTS daemon is running.
+"""Claude Code `SessionStart`/`Stop` hook: keep the voice processes running.
 
-Pings the daemon port; if nothing answers, launches tts_server.py detached (no
-console window) using the same interpreter that ran this script. Returns
-immediately so it never delays session startup.
+Checks the daemon (PID file + port ping), overlay and tray independently and
+launches whichever is missing, detached (no console window), using the same
+interpreter that ran this script. Returns immediately so it never delays the
+session.
 """
 from __future__ import annotations
 
@@ -75,19 +76,12 @@ def _spawn(script: Path) -> None:
     )
 
 
-def _overlay_alive() -> bool:
+def _port_alive(port: int) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", config.OVERLAY_PORT), timeout=0.4):
+        with socket.create_connection(("127.0.0.1", port), timeout=0.4):
             return True
     except OSError:
         return False
-
-
-def _launch() -> None:
-    src = Path(__file__).resolve().parent
-    _spawn(src / "tts_server.py")
-    if config.OVERLAY and not _overlay_alive():
-        _spawn(src / "overlay.py")
 
 
 def main() -> int:
@@ -97,11 +91,18 @@ def main() -> int:
     except Exception:
         pass
 
-    if not _daemon_alive():
-        try:
-            _launch()
-        except Exception:
-            pass
+    # Each process is checked independently, so a crashed overlay or tray is
+    # revived even while the daemon is healthy (and vice versa).
+    src = Path(__file__).resolve().parent
+    try:
+        if not _daemon_alive():
+            _spawn(src / "tts_server.py")
+        if config.OVERLAY and not _port_alive(config.OVERLAY_PORT):
+            _spawn(src / "overlay.py")
+        if config.TRAY and not _port_alive(config.TRAY_PORT):
+            _spawn(src / "tray.py")
+    except Exception:
+        pass
     return 0
 
 

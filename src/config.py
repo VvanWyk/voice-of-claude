@@ -111,6 +111,12 @@ TLDR_TIMEOUT = _env_int("TTS_TLDR_TIMEOUT", 25)  # seconds; fallback: full text
 # Set TTS_OVERLAY=0 to disable entirely.
 OVERLAY = _env_bool("TTS_OVERLAY", True)
 OVERLAY_PORT = _env_int("TTS_OVERLAY_PORT", 7767)
+
+# --- System tray --------------------------------------------------------------
+# Tray icon with mute toggle and voice switcher. The port is only a
+# single-instance lock. Set TTS_TRAY=0 to disable.
+TRAY = _env_bool("TTS_TRAY", True)
+TRAY_PORT = _env_int("TTS_TRAY_PORT", 7768)
 # Extra delay (ms) added to the word-sweep start to cover output latency the
 # audio stack doesn't report (WASAPI shared-mode mixer buffering). Raise if the
 # highlight runs ahead of the voice, lower (or negative) if it lags behind.

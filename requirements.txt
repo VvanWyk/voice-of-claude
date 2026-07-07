@@ -6,3 +6,5 @@ onnxruntime>=1.17   # CPU build. For GPU, uninstall this and install ONE of:
 #   onnxruntime-directml   # any DX12 GPU incl. Intel/AMD (Kokoro only) - TTS_DEVICE=auto|dml
 sounddevice>=0.5
 numpy>=1.24,<2.3
+pystray>=0.19           # system tray icon (mute toggle, voice switcher)
+Pillow>=10              # tray icon rendering
