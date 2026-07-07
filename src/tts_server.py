@@ -7,13 +7,15 @@ paying a 1-2s model load on every reply.
 Protocol: newline-delimited UTF-8 over TCP on 127.0.0.1:<TTS_PORT>.
   - any normal line  -> speak it
   - __STOP__         -> stop current playback, clear the queue
+  - __PAUSE__        -> toggle pause / resume
+  - __NEXT__ / __PREV__ -> skip forward / back one sentence chunk
+  - __SEEK__ <n>     -> jump to the chunk containing char offset <n>
   - __MUTE__ / __UNMUTE__
   - __PING__         -> health check (used by launch_server.py)
   - __RELOAD__ [TTS_KEY=value ...] -> re-read config + rebuild engine in place
 
-Interrupt playback at any time with the configured key (default ESC), which is
-polled globally via the Win32 API so it works regardless of which process owns
-the terminal.
+Global hotkeys (polled via Win32, work whatever window has focus):
+  ESC stop · Ctrl+Alt+Space pause/resume · Ctrl+Alt+Right/Left skip.
 
 Run directly to test in the foreground:  python src/tts_server.py
 """
@@ -36,6 +38,7 @@ import config
 # imported lazily AFTER the single-instance guard in main(), so a duplicate
 # launch exits in milliseconds instead of spending 1-2s importing first.
 sd = None  # set by _load_audio() once this process wins the singleton lock
+np = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,11 +89,32 @@ def _acquire_singleton() -> bool:
 
 
 def _load_audio() -> None:
-    """Import sounddevice once (after the singleton guard)."""
-    global sd
+    """Import sounddevice + numpy once (after the singleton guard)."""
+    global sd, np
     if sd is None:
         import sounddevice
+        import numpy
         sd = sounddevice
+        np = numpy
+
+
+class Transport:
+    """Playback state for one reply, shared by the consumer and control paths.
+
+    All fields are guarded by `cond`. The consumer plays `chunks[idx]`; control
+    commands (pause/skip/seek) mutate `paused` / `jump` and notify. `jump` is a
+    requested chunk index; `pending_seek` holds a char offset that has not been
+    synthesized yet (the producer resolves it as chunks arrive).
+    """
+
+    def __init__(self) -> None:
+        self.chunks: list = []  # [(samples, sr, piece, start, end)]
+        self.done = False       # producer finished
+        self.idx = 0
+        self.paused = False
+        self.jump: int | None = None
+        self.pending_seek: int | None = None
+        self.cond = threading.Condition()
 
 
 class TTSDaemon:
@@ -100,6 +124,7 @@ class TTSDaemon:
         self.shutdown = threading.Event()
         self.muted = config.MUTE
         self.engine = None
+        self.transport: Transport | None = None  # reply currently playing
 
     # --- model -------------------------------------------------------------
     def load_model(self) -> None:
@@ -177,50 +202,87 @@ class TTSDaemon:
 
     def _speak(self, text: str) -> None:
         gap = max(0, config.GAP_MS) / 1000.0
-        audio_q: "queue.Queue" = queue.Queue(maxsize=2)
+        tr = Transport()
+        self.transport = tr
 
         b64 = lambda s: base64.b64encode(s.encode("utf-8")).decode("ascii")
         self._overlay_send(f"SHOW:{b64(text)}")
+        self._overlay_send("STATE:playing")
 
         def _producer() -> None:
+            # Track each chunk's char range in `text` (same forward-search the
+            # overlay uses) so seek requests can map an offset to a chunk.
+            search_from = 0
+            prev_end = 0
             try:
-                for chunk in self.engine.stream(text):
+                for samples, sr, piece in self.engine.stream(text):
                     if self.interrupt.is_set() or self.shutdown.is_set():
                         return
-                    audio_q.put(chunk)
+                    if piece:
+                        start = text.find(piece, search_from)
+                        if start == -1:
+                            start = text.find(piece)
+                        if start == -1:
+                            start = prev_end
+                        end = start + len(piece)
+                        search_from = end
+                    else:
+                        start = end = prev_end
+                    prev_end = end
+                    with tr.cond:
+                        tr.chunks.append((samples, sr, piece, start, end))
+                        if tr.pending_seek is not None and tr.pending_seek < end:
+                            tr.jump = len(tr.chunks) - 1
+                            tr.pending_seek = None
+                        tr.cond.notify_all()
             except Exception as e:
                 log.warning("Synthesis failed: %s", e)
             finally:
-                audio_q.put(None)
+                with tr.cond:
+                    tr.done = True
+                    if tr.pending_seek is not None:
+                        tr.pending_seek = None
+                        if tr.chunks:
+                            tr.jump = len(tr.chunks) - 1
+                    tr.cond.notify_all()
 
         threading.Thread(target=_producer, daemon=True).start()
 
-        first = True
-        while True:
-            try:
-                item = audio_q.get(timeout=0.1)
-            except queue.Empty:
-                if self.interrupt.is_set() or self.shutdown.is_set():
-                    self._overlay_send("HIDE")
+        sequential = False  # True when the previous chunk finished naturally
+        try:
+            while True:
+                with tr.cond:
+                    while True:
+                        if self.interrupt.is_set() or self.shutdown.is_set():
+                            return
+                        if tr.jump is not None:
+                            tr.idx = max(0, tr.jump)
+                            tr.jump = None
+                            sequential = False
+                        if tr.idx < len(tr.chunks):
+                            break
+                        if tr.done:
+                            return  # finished, or skipped past the end
+                        tr.cond.wait(0.1)
+                    samples, sr, piece, _start, _end = tr.chunks[tr.idx]
+                if gap and sequential:
+                    self._pause(gap)
+                    if self.interrupt.is_set() or self.shutdown.is_set():
+                        return
+                if piece:
+                    self._overlay_send(f"SPEAK:{b64(piece)}")
+                result = self._play_chunk(samples, sr, tr)
+                if result == "abort":
                     return
-                continue
-            if item is None:
-                break
-            if self.interrupt.is_set() or self.shutdown.is_set():
-                self._overlay_send("HIDE")
-                return
-            samples, sr, piece = item
-            if piece:
-                self._overlay_send(f"SPEAK:{b64(piece)}")
-            if gap and not first:
-                self._pause(gap)
-                if self.interrupt.is_set() or self.shutdown.is_set():
-                    self._overlay_send("HIDE")
-                    return
-            self._play(samples, sr)
-            first = False
-
-        self._overlay_send("HIDE")
+                if result == "jump":
+                    continue
+                sequential = True
+                with tr.cond:
+                    if tr.jump is None:
+                        tr.idx += 1
+        finally:
+            self.transport = None
+            self._overlay_send("HIDE")
 
     def _pause(self, seconds: float) -> None:
         """Silent, interruptible delay between chunks."""
@@ -230,41 +292,134 @@ class TTSDaemon:
                 return
             time.sleep(0.02)
 
-    def _play(self, samples, sr) -> None:
+    def _play_chunk(self, samples, sr, tr: Transport) -> str:
+        """Play one chunk in ~50 ms blocks so pause/skip/stop react mid-sentence.
+
+        Returns "done" (played to the end), "jump" (a skip/seek moved the
+        cursor) or "abort" (interrupt/shutdown).
+        """
+        data = np.ascontiguousarray(samples)
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
+        dtype = "int16" if data.dtype == np.int16 else "float32"
+        if dtype == "float32" and data.dtype != np.float32:
+            data = data.astype(np.float32)
+        block = max(1, int(sr * 0.05))
         try:
-            sd.play(samples, sr)
+            with sd.OutputStream(samplerate=sr, channels=data.shape[1], dtype=dtype) as stream:
+                i = 0
+                while i < len(data):
+                    if self.interrupt.is_set() or self.shutdown.is_set():
+                        return "abort"  # close() discards pending audio
+                    if tr.jump is not None:
+                        return "jump"
+                    if tr.paused:
+                        stream.stop()
+                        while tr.paused:
+                            if self.interrupt.is_set() or self.shutdown.is_set():
+                                return "abort"
+                            if tr.jump is not None:
+                                return "jump"
+                            time.sleep(0.03)
+                        stream.start()
+                    stream.write(data[i:i + block])
+                    i += block
+                # Drain the OS buffer so the chunk's tail is not cut off.
+                stream.stop()
         except Exception as e:
             log.warning("Playback failed: %s", e)
-            return
-        while True:
-            if self.interrupt.is_set() or self.shutdown.is_set():
-                sd.stop()
-                return
-            stream = sd.get_stream()
-            if stream is None or not stream.active:
-                break
-            time.sleep(0.02)
-        # Flush the OS audio buffer before moving to the next chunk,
-        # otherwise the last few ms are cut off when sd.play() is called again.
-        try:
-            sd.wait()
-        except Exception:
-            pass
+        return "done"
 
-    # --- interrupt key poll ------------------------------------------------
+    # --- transport controls --------------------------------------------------
+    def toggle_pause(self) -> None:
+        tr = self.transport
+        if tr is None:
+            return
+        with tr.cond:
+            tr.paused = not tr.paused
+            paused = tr.paused
+            tr.cond.notify_all()
+        self._overlay_send("STATE:paused" if paused else "STATE:playing")
+        log.info("Playback %s", "paused" if paused else "resumed")
+
+    def skip(self, delta: int) -> None:
+        """Move the cursor by `delta` chunks; past the end simply finishes."""
+        tr = self.transport
+        if tr is None:
+            return
+        with tr.cond:
+            tr.jump = max(0, tr.idx + delta)
+            tr.paused = False
+            tr.cond.notify_all()
+        self._overlay_send("STATE:playing")
+        log.info("Skip %+d", delta)
+
+    def seek(self, offset: int) -> None:
+        """Jump to the chunk containing char `offset` (overlay click-to-seek)."""
+        tr = self.transport
+        if tr is None:
+            return
+        with tr.cond:
+            target = None
+            covered = False
+            for i, (_, _, piece, start, end) in enumerate(tr.chunks):
+                if piece and start <= offset:
+                    target = i
+                    covered = offset < end
+            if target is None:
+                if tr.chunks:
+                    tr.jump = 0  # clicked before the first chunk
+                elif not tr.done:
+                    tr.pending_seek = offset
+            elif covered or tr.done:
+                tr.jump = target
+            else:
+                tr.pending_seek = offset  # not synthesized yet
+            tr.paused = False
+            tr.cond.notify_all()
+        self._overlay_send("STATE:playing")
+        log.info("Seek to char %d", offset)
+
+    # --- global hotkey poll --------------------------------------------------
     def key_poller(self) -> None:
+        """Poll global hotkeys via Win32 (works whatever window has focus).
+
+        ESC (bare)          -> stop playback
+        Ctrl+Alt+Space      -> pause / resume
+        Ctrl+Alt+Right/Left -> skip forward / back one sentence
+
+        Transport keys need Ctrl+Alt so normal typing is never hijacked; ESC
+        stays bare for backwards compatibility (TTS_INTERRUPT_VK).
+        """
         try:
             user32 = ctypes.windll.user32
         except AttributeError:
             log.info("Key polling unavailable on this platform; skipping.")
             return
-        was_down = False
+
+        def down(vk: int) -> bool:
+            return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+        VK_CONTROL, VK_MENU = 0x11, 0x12
+        combos = {
+            0x20: self.toggle_pause,        # Space
+            0x27: lambda: self.skip(+1),    # Right arrow
+            0x25: lambda: self.skip(-1),    # Left arrow
+        }
+        was = {vk: False for vk in combos}
+        was_stop = False
         while not self.shutdown.is_set():
-            down = bool(user32.GetAsyncKeyState(config.INTERRUPT_VK) & 0x8000)
-            if down and not was_down:
+            stop_down = down(config.INTERRUPT_VK)
+            if stop_down and not was_stop:
                 self.stop_now()
                 log.info("Interrupt key pressed -> playback stopped")
-            was_down = down
+            was_stop = stop_down
+            mods = down(VK_CONTROL) and down(VK_MENU)
+            for vk, action in combos.items():
+                pressed = mods and down(vk)
+                if pressed and not was[vk]:
+                    action()
+                was[vk] = pressed
             time.sleep(0.03)
 
     # --- socket server -----------------------------------------------------
@@ -337,6 +492,16 @@ class TTSDaemon:
                     pass
             elif line == config.CTRL_STOP:
                 self.stop_now()
+            elif line == config.CTRL_PAUSE:
+                self.toggle_pause()
+            elif line == config.CTRL_NEXT:
+                self.skip(+1)
+            elif line == config.CTRL_PREV:
+                self.skip(-1)
+            elif line.startswith(config.CTRL_SEEK):
+                arg = line[len(config.CTRL_SEEK):].strip()
+                if arg.isdigit():
+                    self.seek(int(arg))
             elif line == config.CTRL_MUTE:
                 self.muted = True
                 self.stop_now()

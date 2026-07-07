@@ -124,3 +124,9 @@ CTRL_PING = "__PING__"
 # restart). Optional inline overrides apply first, e.g.
 #   __RELOAD__ TTS_PIPER_VOICE=en_US-amy-medium TTS_SPEED=1.1
 CTRL_RELOAD = "__RELOAD__"
+
+# Transport controls - act on the reply currently being spoken.
+CTRL_PAUSE = "__PAUSE__"  # toggle pause / resume
+CTRL_NEXT = "__NEXT__"    # skip forward one sentence chunk
+CTRL_PREV = "__PREV__"    # jump back one sentence chunk
+CTRL_SEEK = "__SEEK__"    # __SEEK__ <char-offset> - jump to the chunk at that offset

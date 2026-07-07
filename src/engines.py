@@ -26,6 +26,26 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 # Preferred GPU ONNX providers, best first. CPU is always appended as fallback.
 _GPU_PROVIDERS = ["CUDAExecutionProvider", "DmlExecutionProvider"]
 
+_dlls_preloaded = False
+
+
+def _preload_gpu_dlls() -> None:
+    """Load CUDA/cuDNN DLLs shipped as nvidia-* pip wheels (onnxruntime >= 1.21).
+
+    Without this, CUDA only works if the CUDA toolkit is on the system PATH;
+    with it, `pip install onnxruntime-gpu[cuda,cudnn]` is all that's needed.
+    """
+    global _dlls_preloaded
+    if _dlls_preloaded:
+        return
+    _dlls_preloaded = True
+    try:
+        import onnxruntime as rt
+
+        rt.preload_dlls()
+    except Exception:
+        pass  # older onnxruntime or CPU-only build - nothing to preload
+
 
 def select_providers():
     """Ordered ONNX providers honoring TTS_DEVICE, with CPU as the fallback.
@@ -35,6 +55,7 @@ def select_providers():
     """
     import onnxruntime as rt
 
+    _preload_gpu_dlls()
     available = rt.get_available_providers()
     want = config.DEVICE
     gpu = []
@@ -55,6 +76,7 @@ def cuda_available() -> bool:
     try:
         import onnxruntime as rt
 
+        _preload_gpu_dlls()
         return "CUDAExecutionProvider" in rt.get_available_providers()
     except Exception:
         return False

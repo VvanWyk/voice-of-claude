@@ -14,7 +14,12 @@ spacebar). This project adds the missing half: voice *output*.
   first sentence while the rest is being generated.
 - **Karaoke overlay** — a borderless always-on-top window shows the full reply
   and highlights each sentence as it is spoken. Draggable. Press **ESC** to
-  stop playback and dismiss.
+  stop playback and dismiss, or use the ✕ button.
+- **Transport controls** — pause/resume, skip forward/back a sentence, and
+  **click any sentence in the overlay to jump straight to it**. Global hotkeys
+  (work whatever window has focus): `Ctrl+Alt+Space` pause/resume,
+  `Ctrl+Alt+→` / `Ctrl+Alt+←` skip, `ESC` stop. The overlay has matching
+  ⏮ ⏯ ⏭ buttons.
 - **Attention chime** — a short sound plays when Claude needs your input
   (permission prompt or `AskUserQuestion`), instead of interrupting the current
   reply.
@@ -167,25 +172,50 @@ Changes to engine, voice or device need a daemon restart:
 The default `onnxruntime` package is CPU-only. To enable a GPU:
 
 ```powershell
-# NVIDIA CUDA (accelerates Piper and Kokoro):
+# NVIDIA CUDA (accelerates Piper and Kokoro). The [cuda,cudnn] extras pull the
+# CUDA runtime + cuDNN as pip wheels, so no system-wide CUDA toolkit is needed:
 .\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
-.\.venv\Scripts\python.exe -m pip install onnxruntime-gpu
+.\.venv\Scripts\python.exe -m pip install "onnxruntime-gpu[cuda,cudnn]"
 
 # Any DirectX 12 GPU — Intel / AMD (Kokoro only, Piper has no DML path):
 .\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
 .\.venv\Scripts\python.exe -m pip install onnxruntime-directml
 ```
 
+The engine loader calls `onnxruntime.preload_dlls()` at startup so the wheels'
+CUDA/cuDNN DLLs are found without touching PATH. If `nvidia-smi` works but the
+log still says `device: cpu`, check that only ONE onnxruntime package is
+installed — a plain `onnxruntime` sitting next to `onnxruntime-gpu` silently
+shadows the GPU build.
+
 `onnxruntime`, `onnxruntime-gpu`, and `onnxruntime-directml` are mutually
 exclusive — install exactly one. Set `TTS_DEVICE=cuda` or `TTS_DEVICE=dml`
 then restart the daemon. The active device is logged at startup:
 `Engine 'kokoro' ready (device: cuda)`.
 
+### Transport controls
+
+While a reply is being spoken:
+
+| Action | Global hotkey | Overlay | Socket command |
+|---|---|---|---|
+| Stop & dismiss | `ESC` | ✕ button | `__STOP__` |
+| Pause / resume | `Ctrl+Alt+Space` | ⏯ button | `__PAUSE__` |
+| Next sentence | `Ctrl+Alt+→` | ⏭ button | `__NEXT__` |
+| Previous sentence | `Ctrl+Alt+←` | ⏮ button | `__PREV__` |
+| Jump anywhere | — | click a sentence | `__SEEK__ <char offset>` |
+
+Hotkeys are polled globally (Win32), so they work no matter which window has
+focus. Pausing freezes mid-word and resumes exactly where it stopped; skipping
+past the last sentence simply ends playback. Seeking to a sentence that hasn't
+been synthesised yet waits for it, then jumps.
+
 ### About the ESC interrupt key
 
 ESC also clears the Claude Code input line. To use a different key, set
 `TTS_INTERRUPT_VK` — e.g. `19` (Pause/Break) or `145` (Scroll Lock) — and
-restart the daemon.
+restart the daemon. The transport hotkeys need `Ctrl+Alt` precisely so they
+never hijack normal typing.
 
 ## Files
 
@@ -194,7 +224,7 @@ restart the daemon.
 | `src/tts_server.py` | Warm daemon: socket server, streaming producer-consumer playback |
 | `src/engines.py` | Pluggable Piper / Kokoro engines (`stream()` → `(samples, sr, chunk)`) |
 | `src/normalizer.py` | Text normalisation: numbers, units, decimals, ordinals, abbreviations |
-| `src/overlay.py` | Karaoke overlay: floating window, sentence highlighting, ESC hint |
+| `src/overlay.py` | Karaoke overlay: sentence highlighting, transport buttons, click-to-seek |
 | `src/speak.py` | Stop / Notification / AskUserQuestion hook client → daemon socket |
 | `src/bell.py` | Attention chime: plays `TTS_BELL_SOUND` WAV or system beep |
 | `src/launch_server.py` | SessionStart / Stop hook: start daemon + overlay if not running |

@@ -4,10 +4,12 @@ Started alongside the TTS daemon by launch_server.py. Listens on
 TTS_OVERLAY_PORT (default 7767) for newline-terminated commands:
   SHOW:<base64>   – display the overlay with the full reply text
   SPEAK:<base64>  – highlight this chunk in the displayed text
+  STATE:<name>    – transport state ("paused" / "playing") for the ⏯ button
   HIDE            – fade out and hide the window
 
-The window is borderless, always-on-top, and draggable. Set TTS_OVERLAY=0
-to disable.
+The window is borderless, always-on-top, and draggable. Transport buttons
+(⏮ ⏯ ⏭ ✕) and click-a-sentence-to-seek send commands back to the daemon on
+TTS_PORT. Set TTS_OVERLAY=0 to disable.
 """
 from __future__ import annotations
 
@@ -71,21 +73,57 @@ class OverlayWindow:
             "hl", background=self.HL_BG, foreground=self.HL_FG,
         )
 
-        # Keyboard shortcut hint — placed over the text widget, top-right corner
+        # Close button — top-right corner, stops playback and hides the overlay
+        close = tk.Label(
+            inner,
+            text="✕",
+            font=(self.FONT_FAM, 11),
+            bg=self.BG, fg="#6272a4",
+            cursor="hand2",
+        )
+        close.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=6)
+        close.bind("<Button-1>", lambda e: self._close_clicked())
+        close.bind("<Enter>", lambda e: close.configure(fg="#f7768e"))
+        close.bind("<Leave>", lambda e: close.configure(fg="#6272a4"))
+
+        # Transport buttons — top-left corner. ⏯ mirrors the daemon's state
+        # (STATE:paused / STATE:playing messages).
+        self._btn_pause = None
+        x = 12
+        for glyph, cmd in (("⏮", config.CTRL_PREV),
+                           ("⏸", config.CTRL_PAUSE),
+                           ("⏭", config.CTRL_NEXT)):
+            btn = tk.Label(
+                inner, text=glyph,
+                font=(self.FONT_FAM, 11),
+                bg=self.BG, fg="#6272a4",
+                cursor="hand2",
+            )
+            btn.place(x=x, y=6)
+            btn.bind("<Button-1>", lambda e, c=cmd: self._daemon_async(c))
+            btn.bind("<Enter>", lambda e, b=btn: b.configure(fg="#7aa2f7"))
+            btn.bind("<Leave>", lambda e, b=btn: b.configure(fg="#6272a4"))
+            if cmd == config.CTRL_PAUSE:
+                self._btn_pause = btn
+            x += 26
+
+        # Keyboard shortcut hint — left of the close button
         hint = tk.Label(
             inner,
-            text="ESC  stop",
+            text="Ctrl+Alt+Space pause  ·  Ctrl+Alt+←/→ skip  ·  ESC stop",
             font=(self.FONT_FAM, 9),
             bg=self.BG, fg="#6272a4",
             cursor="arrow",
         )
-        hint.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=8)
+        hint.place(relx=1.0, rely=0.0, anchor="ne", x=-34, y=8)
 
-        # Drag support
+        # Drag support; a release without movement on the text is a seek-click.
         for w in (self.root, inner, self._txt):
             w.bind("<Button-1>", self._drag_start)
             w.bind("<B1-Motion>", self._drag_move)
+        self._txt.bind("<ButtonRelease-1>", self._txt_release)
         self._dx = self._dy = 0
+        self._px = self._py = 0  # press origin, to tell a click from a drag
 
         self._alpha   = 0.0
         self._fade_id = None
@@ -100,15 +138,46 @@ class OverlayWindow:
         y = (self._sh - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
-    # ── drag ─────────────────────────────────────────────────────────────
+    # ── daemon commands ───────────────────────────────────────────────────
+    def _close_clicked(self) -> None:
+        self._fade_out()
+        # Also stop the daemon's playback, same as pressing ESC.
+        self._daemon_async(config.CTRL_STOP)
+
+    def _daemon_async(self, cmd: str) -> None:
+        threading.Thread(target=self._send_daemon, args=(cmd,), daemon=True).start()
+
+    @staticmethod
+    def _send_daemon(cmd: str) -> None:
+        try:
+            with socket.create_connection((config.HOST, config.PORT), timeout=0.5) as s:
+                s.sendall((cmd + "\n").encode("utf-8"))
+        except OSError:
+            pass
+
+    # ── drag / click-to-seek ─────────────────────────────────────────────
     def _drag_start(self, e: tk.Event) -> None:
         self._dx, self._dy = e.x_root, e.y_root
+        self._px, self._py = e.x_root, e.y_root
 
     def _drag_move(self, e: tk.Event) -> None:
         x = self.root.winfo_x() + e.x_root - self._dx
         y = self.root.winfo_y() + e.y_root - self._dy
         self.root.geometry(f"+{x}+{y}")
         self._dx, self._dy = e.x_root, e.y_root
+
+    def _txt_release(self, e: tk.Event) -> None:
+        if abs(e.x_root - self._px) + abs(e.y_root - self._py) > 4:
+            return  # it was a drag, not a click
+        if not self._full:
+            return
+        try:
+            index = self._txt.index(f"@{e.x},{e.y}")
+            counted = self._txt.count("1.0", index, "chars")
+            offset = counted[0] if counted else 0
+        except tk.TclError:
+            return
+        self._daemon_async(f"{config.CTRL_SEEK} {max(0, offset)}")
 
     # ── socket server ─────────────────────────────────────────────────────
     def _serve(self) -> None:
@@ -154,8 +223,15 @@ class OverlayWindow:
         elif line.startswith("SPEAK:"):
             chunk = base64.b64decode(line[6:]).decode("utf-8")
             self.root.after(0, lambda c=chunk: self._highlight(c))
+        elif line.startswith("STATE:"):
+            state = line[6:]
+            self.root.after(0, lambda s=state: self._set_state(s))
 
     # ── UI updates (main thread only) ─────────────────────────────────────
+    def _set_state(self, state: str) -> None:
+        if self._btn_pause is not None:
+            self._btn_pause.configure(text="▶" if state == "paused" else "⏸")
+
     def _show(self, text: str) -> None:
         self._full = text
         self._from = 0
