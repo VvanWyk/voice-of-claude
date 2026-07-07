@@ -40,6 +40,10 @@ spacebar). This project adds the missing half: voice *output*.
   point one four*; `1.62 m/s` → *one point six two metres per second*).
 - **GPU acceleration** — Kokoro runs on CUDA or DirectML when available; falls
   back to CPU transparently.
+- **TL;DR mode** — replies longer than `TTS_TLDR_CHARS` are summarised to two
+  spoken sentences by a fast model (`claude -p --model haiku` subprocess)
+  before synthesis; any failure or timeout falls back to the full reply. The
+  overlay shows the summary. Off by default.
 - **Self-healing daemon** — the `Stop` hook checks whether the daemon and
   overlay are running and restarts them if not, so a crashed process recovers
   automatically on the next reply.
@@ -168,6 +172,10 @@ before the reply is spoken.
 | `TTS_OVERLAY_PORT` | `7767` | Overlay localhost port |
 | `TTS_SWEEP_OFFSET_MS` | `200` | Word-sweep trim for unreported audio latency: raise if the highlight runs ahead of the voice, lower if it lags |
 | `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
+| `TTS_BELL_IDLE` | `0` | `1` = also chime for the idle "waiting for your input" reminder (~60s after each reply) |
+| `TTS_TLDR_CHARS` | `0` | Replies longer than this are spoken as a 2-sentence summary (`0` = always full) |
+| `TTS_TLDR_MODEL` | `haiku` | Model for the `claude -p` summariser |
+| `TTS_TLDR_TIMEOUT` | `25` | Seconds before giving up and speaking the full reply |
 
 Changes to engine, voice or device need a daemon restart:
 
@@ -259,6 +267,8 @@ never hijack normal typing.
   `src/normalizer.py` if a specific pattern isn't converted.
 - **It reads code aloud**: it shouldn't — code fences become *"I shared a code
   block."* Inline `code` is read as plain words by design.
+- **Unexpected chimes**: every chime decision is logged to `.state/bell.log`
+  with the notification type and message — check there to see what fired.
 
 ## License notes
 

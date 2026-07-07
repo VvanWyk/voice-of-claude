@@ -198,8 +198,59 @@ class TTSDaemon:
                 break
             if self.muted:
                 continue
+            if config.TLDR_CHARS > 0 and len(text) > config.TLDR_CHARS:
+                text = self._tldr_or_full(text)
+                if self.shutdown.is_set():
+                    break
             self.interrupt.clear()
             self._speak(text)
+
+    _TLDR_PROMPT = (
+        "Summarize the following coding-assistant reply in at most two short "
+        "sentences, written to be read aloud by text-to-speech. Keep the key "
+        "outcome, numbers and names. Reply with ONLY the summary text, no "
+        "preamble and no markdown."
+    )
+
+    def _tldr_or_full(self, text: str) -> str:
+        """Summarise a long reply via `claude -p`; fall back to the full text.
+
+        The child claude session runs with TTS_MUTE=1 so its own Stop hooks
+        cannot speak (which would recurse into this very daemon).
+        """
+        import shutil
+        import subprocess
+
+        exe = shutil.which("claude")
+        if not exe:
+            log.warning("TL;DR: 'claude' CLI not on PATH; speaking full reply")
+            return text
+        cmd = [exe, "-p", "--model", config.TLDR_MODEL, self._TLDR_PROMPT]
+        if exe.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd", "/c"] + cmd
+        t0 = time.time()
+        try:
+            r = subprocess.run(
+                cmd,
+                input=text.encode("utf-8"),
+                capture_output=True,
+                timeout=max(5, config.TLDR_TIMEOUT),
+                env=dict(os.environ, TTS_MUTE="1"),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            summary = r.stdout.decode("utf-8", "replace").strip()
+            if r.returncode == 0 and summary:
+                log.info(
+                    "TL;DR: %d -> %d chars in %.1fs",
+                    len(text), len(summary), time.time() - t0,
+                )
+                return "Summary: " + summary
+            log.warning("TL;DR failed (rc=%s); speaking full reply", r.returncode)
+        except subprocess.TimeoutExpired:
+            log.warning("TL;DR timed out (%ss); speaking full reply", config.TLDR_TIMEOUT)
+        except Exception as e:
+            log.warning("TL;DR error: %s; speaking full reply", e)
+        return text
 
     def _speak(self, text: str) -> None:
         gap = max(0, config.GAP_MS) / 1000.0

@@ -98,6 +98,14 @@ BARGE_IN = _env_bool("TTS_BARGE_IN", True)
 # Common alternatives: 0x13 = PAUSE/Break, 0x91 = ScrollLock.
 INTERRUPT_VK = _env_int("TTS_INTERRUPT_VK", 0x1B)
 
+# --- TL;DR mode ---------------------------------------------------------------
+# When > 0, replies longer than this many characters are summarised before
+# being spoken (via a `claude -p` subprocess with a fast model); the overlay
+# shows the summary too. 0 = always speak replies in full.
+TLDR_CHARS = _env_int("TTS_TLDR_CHARS", 0)
+TLDR_MODEL = _env("TTS_TLDR_MODEL", "haiku")
+TLDR_TIMEOUT = _env_int("TTS_TLDR_TIMEOUT", 25)  # seconds; fallback: full text
+
 # --- Overlay ----------------------------------------------------------------
 # Floating text overlay that highlights the sentence currently being spoken.
 # Set TTS_OVERLAY=0 to disable entirely.
