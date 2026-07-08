@@ -37,6 +37,10 @@ spacebar). This project adds the missing half: voice *output*.
 - **Audio ducking** — while Claude speaks, other apps (music, videos) are
   lowered to `TTS_DUCK`% of their volume and restored exactly afterwards.
   Per-session (Windows Core Audio) — the system master volume is untouched.
+- **Dictation truce** — hold spacebar to dictate (Claude Code's built-in
+  voice input) and playback auto-pauses so the voice doesn't talk into your
+  microphone; it resumes the moment you release. A truce pause never
+  overrides a manual pause.
 - **Text normalisation** — numbers, units, decimals, ordinals, abbreviations
   and currency are converted to natural spoken form before synthesis
   (`15,200kg` → *fifteen thousand two hundred kilograms*; `3.14` → *three
@@ -184,6 +188,8 @@ before the reply is spoken.
 | `TTS_TRAY_PORT` | `7768` | Tray single-instance lock port |
 | `TTS_EXPORT_DIR` | `<repo>/exports` | Where "Export reply to WAV" saves files |
 | `TTS_DUCK` | `30` | Other apps' volume (%) while speaking; `100` disables ducking |
+| `TTS_DICTATION_TRUCE` | `1` | `0` = don't auto-pause while spacebar is held for dictation |
+| `TTS_DICTATION_MS` | `400` | How long spacebar must be held before the truce pauses |
 | `TTS_SWEEP_OFFSET_MS` | `200` | Word-sweep trim for unreported audio latency: raise if the highlight runs ahead of the voice, lower if it lags |
 | `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
 | `TTS_BELL_IDLE` | `0` | `1` = also chime for the idle "waiting for your input" reminder (~60s after each reply) |

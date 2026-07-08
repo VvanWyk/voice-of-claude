@@ -98,6 +98,14 @@ BARGE_IN = _env_bool("TTS_BARGE_IN", True)
 # Common alternatives: 0x13 = PAUSE/Break, 0x91 = ScrollLock.
 INTERRUPT_VK = _env_int("TTS_INTERRUPT_VK", 0x1B)
 
+# --- Dictation truce -----------------------------------------------------------
+# Claude Code dictation = holding spacebar. When the bare spacebar stays held
+# past this many ms while a reply is being spoken, playback auto-pauses so the
+# voice doesn't talk over the microphone; it resumes on release. Normal typing
+# never holds space that long. TTS_DICTATION_TRUCE=0 disables.
+DICTATION_TRUCE = _env_bool("TTS_DICTATION_TRUCE", True)
+DICTATION_MS = _env_int("TTS_DICTATION_MS", 400)
+
 # --- Audio ducking -------------------------------------------------------------
 # While speaking, other apps' audio sessions are lowered to this percentage of
 # their current volume (Windows Core Audio, via pycaw) and restored afterwards.

@@ -106,6 +106,35 @@ def _load_audio() -> None:
         np = numpy
 
 
+class DictationTruce:
+    """Auto-pause while the user holds spacebar to dictate; resume on release.
+
+    Pure state machine so it is unit-testable; the key poller feeds it.
+    `update` returns "pause", "resume", or None. It only ever resumes a pause
+    it engaged itself, so a manual pause is never overridden.
+    """
+
+    def __init__(self, hold_ms: int) -> None:
+        self.hold_s = max(0, hold_ms) / 1000.0
+        self.since: float | None = None
+        self.engaged = False
+
+    def update(self, space_down: bool, speaking: bool, now: float):
+        if space_down:
+            if self.since is None:
+                self.since = now
+            elif (not self.engaged and speaking
+                    and now - self.since >= self.hold_s):
+                self.engaged = True
+                return "pause"
+        else:
+            self.since = None
+            if self.engaged:
+                self.engaged = False
+                return "resume"
+        return None
+
+
 class Ducker:
     """Lower other apps' volumes while speaking; restore them exactly after.
 
@@ -604,16 +633,23 @@ class TTSDaemon:
         return str(path)
 
     # --- transport controls --------------------------------------------------
-    def toggle_pause(self) -> None:
+    def set_pause(self, paused: bool) -> None:
         tr = self.transport
         if tr is None:
             return
         with tr.cond:
-            tr.paused = not tr.paused
-            paused = tr.paused
+            if tr.paused == paused:
+                return
+            tr.paused = paused
             tr.cond.notify_all()
         self._overlay_send("STATE:paused" if paused else "STATE:playing")
         log.info("Playback %s", "paused" if paused else "resumed")
+
+    def toggle_pause(self) -> None:
+        tr = self.transport
+        if tr is None:
+            return
+        self.set_pause(not tr.paused)
 
     def skip(self, delta: int) -> None:
         """Move the cursor by `delta` chunks; past the end simply finishes."""
@@ -682,6 +718,10 @@ class TTSDaemon:
         }
         was = {vk: False for vk in combos}
         was_stop = False
+        truce = (
+            DictationTruce(config.DICTATION_MS)
+            if config.DICTATION_TRUCE else None
+        )
         while not self.shutdown.is_set():
             stop_down = down(config.INTERRUPT_VK)
             if stop_down and not was_stop:
@@ -694,6 +734,18 @@ class TTSDaemon:
                 if pressed and not was[vk]:
                     action()
                 was[vk] = pressed
+            if truce is not None:
+                tr = self.transport
+                speaking = tr is not None and not tr.paused
+                verdict = truce.update(
+                    down(0x20) and not mods, speaking, time.time(),
+                )
+                if verdict == "pause":
+                    self.set_pause(True)
+                    log.info("Dictation truce: paused (spacebar held)")
+                elif verdict == "resume":
+                    self.set_pause(False)
+                    log.info("Dictation truce: resumed")
             time.sleep(0.03)
 
     # --- socket server -----------------------------------------------------
