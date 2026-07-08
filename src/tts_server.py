@@ -12,10 +12,14 @@ Protocol: newline-delimited UTF-8 over TCP on 127.0.0.1:<TTS_PORT>.
   - __SEEK__ <n>     -> jump to the chunk containing char offset <n>
   - __MUTE__ / __UNMUTE__
   - __PING__         -> health check (used by launch_server.py)
+  - __HISTORY__      -> JSON list of the last 10 spoken replies (newest first)
+  - __SAY__ <n>      -> re-speak history item n (0 = latest)
+  - __EXPORT__ <n>   -> synthesise history item n to a WAV; replies with path
   - __RELOAD__ [TTS_KEY=value ...] -> re-read config + rebuild engine in place
 
 Global hotkeys (polled via Win32, work whatever window has focus):
-  ESC stop · Ctrl+Alt+Space pause/resume · Ctrl+Alt+Right/Left skip.
+  ESC stop · Ctrl+Alt+Space pause/resume · Ctrl+Alt+Right/Left skip ·
+  Ctrl+Alt+R replay last reply.
 
 Run directly to test in the foreground:  python src/tts_server.py
 """
@@ -24,6 +28,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import importlib
+import json
 import logging
 import math
 import os
@@ -32,6 +37,8 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
+from pathlib import Path
 
 import config
 
@@ -126,6 +133,8 @@ class TTSDaemon:
         self.muted = config.MUTE
         self.engine = None
         self.transport: Transport | None = None  # reply currently playing
+        self.history: deque = deque(maxlen=10)   # spoken replies, newest first
+        self.synth_lock = threading.Lock()       # engine is not re-entrant
 
     # --- model -------------------------------------------------------------
     def load_model(self) -> None:
@@ -202,6 +211,13 @@ class TTSDaemon:
                 text = self._tldr_or_full(text)
                 if self.shutdown.is_set():
                     break
+            # Remember what was actually spoken (post-TL;DR), so replays and
+            # exports reproduce exactly what was heard. Consecutive-duplicate
+            # guard keeps replays from stacking up in the history.
+            if not self.history or self.history[0]["text"] != text:
+                self.history.appendleft(
+                    {"ts": time.strftime("%H:%M"), "text": text}
+                )
             self.interrupt.clear()
             self._speak(text)
 
@@ -267,26 +283,28 @@ class TTSDaemon:
             search_from = 0
             prev_end = 0
             try:
-                for samples, sr, piece in self.engine.stream(text):
-                    if self.interrupt.is_set() or self.shutdown.is_set():
-                        return
-                    if piece:
-                        start = text.find(piece, search_from)
-                        if start == -1:
-                            start = text.find(piece)
-                        if start == -1:
-                            start = prev_end
-                        end = start + len(piece)
-                        search_from = end
-                    else:
-                        start = end = prev_end
-                    prev_end = end
-                    with tr.cond:
-                        tr.chunks.append((samples, sr, piece, start, end))
-                        if tr.pending_seek is not None and tr.pending_seek < end:
-                            tr.jump = len(tr.chunks) - 1
-                            tr.pending_seek = None
-                        tr.cond.notify_all()
+                # synth_lock serialises engine use with WAV export.
+                with self.synth_lock:
+                    for samples, sr, piece in self.engine.stream(text):
+                        if self.interrupt.is_set() or self.shutdown.is_set():
+                            return
+                        if piece:
+                            start = text.find(piece, search_from)
+                            if start == -1:
+                                start = text.find(piece)
+                            if start == -1:
+                                start = prev_end
+                            end = start + len(piece)
+                            search_from = end
+                        else:
+                            start = end = prev_end
+                        prev_end = end
+                        with tr.cond:
+                            tr.chunks.append((samples, sr, piece, start, end))
+                            if tr.pending_seek is not None and tr.pending_seek < end:
+                                tr.jump = len(tr.chunks) - 1
+                                tr.pending_seek = None
+                            tr.cond.notify_all()
             except Exception as e:
                 log.warning("Synthesis failed: %s", e)
             finally:
@@ -479,6 +497,58 @@ class TTSDaemon:
         frac = tr.chunks[idx][3] / text_len if text_len else 0.0
         return f"PROG:{idx + 1}:{total}:{frac:.3f}:{int(round(remaining))}"
 
+    # --- reply history -------------------------------------------------------
+    def say_history(self, n: int) -> None:
+        """Re-speak history item n (0 = latest)."""
+        try:
+            item = self.history[n]
+        except IndexError:
+            return
+        log.info("Replay history[%d] (%d chars)", n, len(item["text"]))
+        self.enqueue(item["text"])
+
+    def export_history(self, n: int):
+        """Synthesise history item n to a WAV file; returns the path or None."""
+        try:
+            item = self.history[n]
+        except IndexError:
+            return None
+        out_dir = Path(config.EXPORT_DIR)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log.warning("Export dir unavailable: %s", e)
+            return None
+        path = out_dir / time.strftime("reply-%Y%m%d-%H%M%S.wav")
+        parts, sr_out = [], None
+        t0 = time.time()
+        with self.synth_lock:  # wait out any in-flight synthesis
+            try:
+                for samples, sr, _piece in self.engine.stream(item["text"]):
+                    if self.shutdown.is_set():
+                        return None
+                    parts.append(samples)
+                    sr_out = sr
+            except Exception as e:
+                log.warning("Export synthesis failed: %s", e)
+                return None
+        if not parts:
+            return None
+        data = np.concatenate(parts)
+        if data.dtype != np.int16:
+            data = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)
+        import wave
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr_out)
+            w.writeframes(data.tobytes())
+        log.info(
+            "Exported history[%d] (%d chars) -> %s in %.1fs",
+            n, len(item["text"]), path, time.time() - t0,
+        )
+        return str(path)
+
     # --- transport controls --------------------------------------------------
     def toggle_pause(self) -> None:
         tr = self.transport
@@ -551,9 +621,10 @@ class TTSDaemon:
 
         VK_CONTROL, VK_MENU = 0x11, 0x12
         combos = {
-            0x20: self.toggle_pause,        # Space
-            0x27: lambda: self.skip(+1),    # Right arrow
-            0x25: lambda: self.skip(-1),    # Left arrow
+            0x20: self.toggle_pause,           # Space
+            0x27: lambda: self.skip(+1),       # Right arrow
+            0x25: lambda: self.skip(-1),       # Left arrow
+            0x52: lambda: self.say_history(0), # R - replay last reply
         }
         was = {vk: False for vk in combos}
         was_stop = False
@@ -651,6 +722,25 @@ class TTSDaemon:
                 arg = line[len(config.CTRL_SEEK):].strip()
                 if arg.isdigit():
                     self.seek(int(arg))
+            elif line == config.CTRL_HISTORY:
+                items = [
+                    {"ts": e["ts"], "preview": e["text"][:70]}
+                    for e in self.history
+                ]
+                try:
+                    conn.sendall((json.dumps(items) + "\n").encode("utf-8"))
+                except OSError:
+                    pass
+            elif line.startswith(config.CTRL_SAY):
+                arg = line[len(config.CTRL_SAY):].strip()
+                self.say_history(int(arg) if arg.isdigit() else 0)
+            elif line.startswith(config.CTRL_EXPORT):
+                arg = line[len(config.CTRL_EXPORT):].strip()
+                path = self.export_history(int(arg) if arg.isdigit() else 0)
+                try:
+                    conn.sendall(((path or "ERROR") + "\n").encode("utf-8"))
+                except OSError:
+                    pass
             elif line == config.CTRL_MUTE:
                 self.muted = True
                 self.stop_now()

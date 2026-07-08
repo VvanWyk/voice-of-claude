@@ -47,6 +47,10 @@ spacebar). This project adds the missing half: voice *output*.
 - **System tray icon** — mute toggle (icon shows a red slash while muted),
   live Kokoro voice switcher, and stop-speaking, without touching config
   files. Voice changes apply in place via the daemon's `__RELOAD__` verb.
+- **Reply history** — the daemon keeps the last 10 spoken replies. Re-speak
+  any of them from the tray's History submenu, replay the latest with
+  `Ctrl+Alt+R` (global) or the tray, or export the latest to a WAV file
+  (saved under `exports/`, revealed in Explorer with a toast).
 - **Self-healing processes** — the `Stop` hook checks the daemon, overlay and
   tray independently and restarts whichever is missing, so a crashed process
   recovers automatically on the next reply.
@@ -175,6 +179,7 @@ before the reply is spoken.
 | `TTS_OVERLAY_PORT` | `7767` | Overlay localhost port |
 | `TTS_TRAY` | `1` | `0` = disable the system tray icon |
 | `TTS_TRAY_PORT` | `7768` | Tray single-instance lock port |
+| `TTS_EXPORT_DIR` | `<repo>/exports` | Where "Export reply to WAV" saves files |
 | `TTS_SWEEP_OFFSET_MS` | `200` | Word-sweep trim for unreported audio latency: raise if the highlight runs ahead of the voice, lower if it lags |
 | `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
 | `TTS_BELL_IDLE` | `0` | `1` = also chime for the idle "waiting for your input" reminder (~60s after each reply) |
@@ -229,6 +234,9 @@ While a reply is being spoken:
 | Next sentence | `Ctrl+Alt+→` | ⏭ button | `__NEXT__` |
 | Previous sentence | `Ctrl+Alt+←` | ⏮ button | `__PREV__` |
 | Jump anywhere | — | click a sentence | `__SEEK__ <char offset>` |
+| Replay last reply | `Ctrl+Alt+R` | tray menu | `__SAY__ 0` |
+| Re-speak older reply | — | tray → History | `__SAY__ <n>` |
+| Export reply to WAV | — | tray menu | `__EXPORT__ <n>` |
 
 Hotkeys are polled globally (Win32), so they work no matter which window has
 focus. Pausing freezes mid-word and resumes exactly where it stopped; skipping

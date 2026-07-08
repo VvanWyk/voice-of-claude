@@ -148,3 +148,9 @@ CTRL_PAUSE = "__PAUSE__"  # toggle pause / resume
 CTRL_NEXT = "__NEXT__"    # skip forward one sentence chunk
 CTRL_PREV = "__PREV__"    # jump back one sentence chunk
 CTRL_SEEK = "__SEEK__"    # __SEEK__ <char-offset> - jump to the chunk at that offset
+
+# Reply history (last 10 spoken replies, newest first).
+CTRL_HISTORY = "__HISTORY__"  # -> one JSON line: [{"ts", "preview"}, ...]
+CTRL_SAY = "__SAY__"          # __SAY__ <n> - re-speak history item n (0 = latest)
+CTRL_EXPORT = "__EXPORT__"    # __EXPORT__ <n> - export item n to WAV -> path line
+EXPORT_DIR = _env("TTS_EXPORT_DIR", str(PROJECT_ROOT / "exports"))

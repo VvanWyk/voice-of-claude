@@ -1,8 +1,10 @@
 """System tray icon for The Voice of Claude.
 
 Menu: mute toggle, Kokoro voice switcher (radio list, applied live via the
-daemon's __RELOAD__ verb), stop-speaking, and quit. The icon shows a speaker,
-with a red slash while muted.
+daemon's __RELOAD__ verb), stop-speaking, replay-last, a History submenu
+(the daemon's last 10 replies, fetched live when the menu opens; click to
+re-speak), WAV export of the latest reply (toast + Explorer reveal), and
+quit. The icon shows a speaker, with a red slash while muted.
 
 Started alongside the daemon by launch_server.py. Single-instance is enforced
 by binding TTS_TRAY_PORT (default 7768) — the port carries no protocol, it is
@@ -10,8 +12,10 @@ only a lock. Set TTS_TRAY=0 to disable.
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 
@@ -66,6 +70,23 @@ def _send_daemon(cmd: str) -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _query_daemon(cmd: str, timeout: float = 2.0) -> str:
+    """Send a verb and return the daemon's one-line reply ("" on failure)."""
+    try:
+        with socket.create_connection((config.HOST, config.PORT), timeout=timeout) as s:
+            s.sendall((cmd + "\n").encode("utf-8"))
+            s.settimeout(timeout)
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        return data.decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
 def _make_image(muted: bool):
     """Draw the speaker icon: amber ring, speaker glyph, arcs or mute slash."""
     from PIL import Image, ImageDraw
@@ -111,6 +132,49 @@ class Tray:
     def _stop(self, icon, item) -> None:
         _send_daemon(config.CTRL_STOP)
 
+    def _replay_last(self, icon, item) -> None:
+        _send_daemon(f"{config.CTRL_SAY} 0")
+
+    def _history_items(self):
+        """Menu items for the History submenu, fetched live on open."""
+        from pystray import MenuItem as Item
+
+        try:
+            entries = json.loads(_query_daemon(config.CTRL_HISTORY, timeout=1.0) or "[]")
+        except ValueError:
+            entries = []
+        if not entries:
+            yield Item("(no replies yet)", None, enabled=False)
+            return
+        for i, e in enumerate(entries):
+            preview = e.get("preview", "").strip()
+            if len(preview) > 58:
+                preview = preview[:58] + "…"
+            yield Item(
+                f'{e.get("ts", "")}   {preview}',
+                (lambda idx: lambda icon, item: _send_daemon(
+                    f"{config.CTRL_SAY} {idx}"))(i),
+            )
+
+    def _export_last(self, icon, item) -> None:
+        def _worker() -> None:
+            # Export waits for any in-flight synthesis, then synthesises the
+            # whole reply - allow generous time before giving up.
+            path = _query_daemon(f"{config.CTRL_EXPORT} 0", timeout=120)
+            if path and path != "ERROR" and os.path.isfile(path):
+                try:
+                    icon.notify(path, "Exported reply to WAV")
+                except Exception:
+                    pass
+                subprocess.Popen(["explorer", "/select,", path])
+            else:
+                try:
+                    icon.notify("Nothing to export or synthesis failed",
+                                "Export failed")
+                except Exception:
+                    pass
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _quit(self, icon, item) -> None:
         icon.stop()
 
@@ -129,6 +193,10 @@ class Tray:
                  checked=lambda item: self.muted),
             Item("Voice", voice_menu),
             Item("Stop speaking", self._stop),
+            Menu.SEPARATOR,
+            Item("Replay last reply", self._replay_last),
+            Item("History", Menu(self._history_items)),
+            Item("Export last reply to WAV", self._export_last),
             Menu.SEPARATOR,
             Item("Quit tray", self._quit),
         )
