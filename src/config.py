@@ -98,6 +98,12 @@ BARGE_IN = _env_bool("TTS_BARGE_IN", True)
 # Common alternatives: 0x13 = PAUSE/Break, 0x91 = ScrollLock.
 INTERRUPT_VK = _env_int("TTS_INTERRUPT_VK", 0x1B)
 
+# --- Audio ducking -------------------------------------------------------------
+# While speaking, other apps' audio sessions are lowered to this percentage of
+# their current volume (Windows Core Audio, via pycaw) and restored afterwards.
+# 100 disables ducking entirely.
+DUCK_PCT = _env_int("TTS_DUCK", 30)
+
 # --- TL;DR mode ---------------------------------------------------------------
 # When > 0, replies longer than this many characters are summarised before
 # being spoken (via a `claude -p` subprocess with a fast model); the overlay

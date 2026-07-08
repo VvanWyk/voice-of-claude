@@ -8,3 +8,4 @@ sounddevice>=0.5
 numpy>=1.24,<2.3
 pystray>=0.19           # system tray icon (mute toggle, voice switcher)
 Pillow>=10              # tray icon rendering
+pycaw>=20240210         # audio ducking: lower other apps while speaking

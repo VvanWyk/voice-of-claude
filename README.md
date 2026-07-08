@@ -34,6 +34,9 @@ spacebar). This project adds the missing half: voice *output*.
 - **Attention chime** — a short sound plays when Claude needs your input
   (permission prompt or `AskUserQuestion`), instead of interrupting the current
   reply.
+- **Audio ducking** — while Claude speaks, other apps (music, videos) are
+  lowered to `TTS_DUCK`% of their volume and restored exactly afterwards.
+  Per-session (Windows Core Audio) — the system master volume is untouched.
 - **Text normalisation** — numbers, units, decimals, ordinals, abbreviations
   and currency are converted to natural spoken form before synthesis
   (`15,200kg` → *fifteen thousand two hundred kilograms*; `3.14` → *three
@@ -180,6 +183,7 @@ before the reply is spoken.
 | `TTS_TRAY` | `1` | `0` = disable the system tray icon |
 | `TTS_TRAY_PORT` | `7768` | Tray single-instance lock port |
 | `TTS_EXPORT_DIR` | `<repo>/exports` | Where "Export reply to WAV" saves files |
+| `TTS_DUCK` | `30` | Other apps' volume (%) while speaking; `100` disables ducking |
 | `TTS_SWEEP_OFFSET_MS` | `200` | Word-sweep trim for unreported audio latency: raise if the highlight runs ahead of the voice, lower if it lags |
 | `TTS_BELL_SOUND` | _(unset)_ | Path to a `.wav` file for the attention chime |
 | `TTS_BELL_IDLE` | `0` | `1` = also chime for the idle "waiting for your input" reminder (~60s after each reply) |

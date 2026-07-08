@@ -106,6 +106,49 @@ def _load_audio() -> None:
         np = numpy
 
 
+class Ducker:
+    """Lower other apps' volumes while speaking; restore them exactly after.
+
+    Uses per-session volumes (Windows Core Audio via pycaw), so the system
+    master volume and this process's own output are untouched. Sessions that
+    appear mid-speech are simply not ducked - next reply catches them.
+    """
+
+    def __init__(self) -> None:
+        self._orig: list = []  # [(ISimpleAudioVolume, original_level)]
+
+    def duck(self, factor: float) -> None:
+        if factor >= 1.0 or self._orig:
+            return
+        try:
+            from pycaw.pycaw import AudioUtilities
+
+            for session in AudioUtilities.GetAllSessions():
+                try:
+                    if session.Process and session.Process.pid == os.getpid():
+                        continue  # never duck our own voice
+                    vol = session.SimpleAudioVolume
+                    if vol is None:
+                        continue
+                    level = vol.GetMasterVolume()
+                    if level <= 0.0:
+                        continue
+                    vol.SetMasterVolume(max(0.0, level * factor), None)
+                    self._orig.append((vol, level))
+                except Exception:
+                    continue
+        except Exception as e:
+            log.debug("Ducking unavailable: %s", e)
+
+    def restore(self) -> None:
+        for vol, level in self._orig:
+            try:
+                vol.SetMasterVolume(level, None)
+            except Exception:
+                pass
+        self._orig.clear()
+
+
 class Transport:
     """Playback state for one reply, shared by the consumer and control paths.
 
@@ -135,6 +178,7 @@ class TTSDaemon:
         self.transport: Transport | None = None  # reply currently playing
         self.history: deque = deque(maxlen=10)   # spoken replies, newest first
         self.synth_lock = threading.Lock()       # engine is not re-entrant
+        self.ducker = Ducker()
 
     # --- model -------------------------------------------------------------
     def load_model(self) -> None:
@@ -198,6 +242,11 @@ class TTSDaemon:
 
     # --- worker ------------------------------------------------------------
     def worker(self) -> None:
+        try:
+            import comtypes
+            comtypes.CoInitialize()  # pycaw needs COM on this thread
+        except Exception:
+            pass
         while not self.shutdown.is_set():
             try:
                 text = self.speak_q.get(timeout=0.2)
@@ -219,7 +268,12 @@ class TTSDaemon:
                     {"ts": time.strftime("%H:%M"), "text": text}
                 )
             self.interrupt.clear()
-            self._speak(text)
+            factor = max(0, min(100, config.DUCK_PCT)) / 100.0
+            self.ducker.duck(factor)
+            try:
+                self._speak(text)
+            finally:
+                self.ducker.restore()
 
     _TLDR_PROMPT = (
         "Summarize the following coding-assistant reply in at most two short "
@@ -777,6 +831,7 @@ class TTSDaemon:
             pass
         finally:
             self.shutdown.set()
+            self.ducker.restore()  # never leave other apps ducked
             sd.stop()
             log.info("Daemon stopped.")
 
