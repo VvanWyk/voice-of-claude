@@ -254,6 +254,7 @@ never hijack normal typing.
 | `src/bell.py` | Attention chime: plays `TTS_BELL_SOUND` WAV or system beep |
 | `src/launch_server.py` | SessionStart / Stop hook: start daemon + overlay + tray if not running |
 | `src/tray.py` | System tray icon: mute toggle, voice switcher, stop speaking |
+| `src/brand_exe.py` | Builds `voice-of-claude.exe` so the tray icon isn't attributed to "Python" |
 | `src/transcript.py` | Extract last assistant message from the `.jsonl` transcript |
 | `src/text_filter.py` | Markdown strip, em-dash normalisation, code-block summarising, length cap |
 | `src/config.py` | Env-var driven configuration |

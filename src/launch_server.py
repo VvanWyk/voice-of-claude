@@ -55,10 +55,16 @@ def _daemon_alive() -> bool:
         return False
 
 
-def _spawn(script: Path) -> None:
+def _spawn(script: Path, exe_name: str | None = None) -> None:
     exe = Path(sys.executable)
-    pythonw = exe.with_name("pythonw.exe")
-    interpreter = str(pythonw if pythonw.exists() else exe)
+    interpreter = None
+    if exe_name:
+        branded = exe.with_name(exe_name)
+        if branded.exists():
+            interpreter = str(branded)
+    if interpreter is None:
+        pythonw = exe.with_name("pythonw.exe")
+        interpreter = str(pythonw if pythonw.exists() else exe)
 
     creationflags = 0
     if os.name == "nt":
@@ -100,7 +106,9 @@ def main() -> int:
         if config.OVERLAY and not _port_alive(config.OVERLAY_PORT):
             _spawn(src / "overlay.py")
         if config.TRAY and not _port_alive(config.TRAY_PORT):
-            _spawn(src / "tray.py")
+            # The branded exe (built by brand_exe.py) makes Windows attribute
+            # the tray icon to "voice-of-claude" instead of "Python".
+            _spawn(src / "tray.py", exe_name="voice-of-claude.exe")
     except Exception:
         pass
     return 0

@@ -49,7 +49,11 @@ foreach ($name in $files.Keys) {
     Invoke-WebRequest -Uri $files[$name] -OutFile $dest
 }
 
-# 4. print hook config --------------------------------------------------------
+# 4. branded launcher exe (tray icon attribution) ------------------------------
+Write-Host "Building branded launcher (voice-of-claude.exe) ..." -ForegroundColor Yellow
+& $py (Join-Path $root "src\brand_exe.py")
+
+# 5. print hook config --------------------------------------------------------
 $pyExe  = (Join-Path $venv "Scripts\python.exe")
 $pywExe = (Join-Path $venv "Scripts\pythonw.exe")
 $speak  = (Join-Path $root "src\speak.py")
