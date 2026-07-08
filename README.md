@@ -60,8 +60,10 @@ spacebar). This project adds the missing half: voice *output*.
   before synthesis; any failure or timeout falls back to the full reply. The
   overlay shows the summary. Off by default.
 - **System tray icon** — mute toggle (icon shows a red slash while muted),
-  live Kokoro voice switcher, and stop-speaking, without touching config
-  files. Voice changes apply in place via the daemon's `__RELOAD__` verb.
+  live Kokoro voice switchers for all three event voices (reply, permission
+  prompt, question — the event voices offer "(same as reply)"), and
+  stop-speaking, without touching config files. Voice changes apply in place
+  via the daemon's `__RELOAD__` verb.
 - **Reply history** — the daemon keeps the last 10 spoken replies. Re-speak
   any of them from the tray's History submenu, replay the latest with
   `Ctrl+Alt+R` (global) or the tray, or export the latest to a WAV file

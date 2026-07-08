@@ -25,12 +25,13 @@ import text_filter
 import transcript
 
 
-def _send(text: str, voice: str = "") -> None:
+def _send(text: str, event_verb: str = "") -> None:
     # Protocol is newline-delimited; collapse newlines so the full reply is one line.
     line = " ".join(text.splitlines())
-    if voice:
-        # Per-event voice override (permission prompts / questions).
-        line = f"{config.CTRL_AS} {voice} {line}"
+    if event_verb:
+        # Tag by event type; the DAEMON maps it to a voice (its config is
+        # live-reloadable from the tray, unlike this hook process's env).
+        line = f"{event_verb} {line}"
     with socket.create_connection((config.HOST, config.PORT), timeout=1.5) as s:
         s.sendall((line + "\n").encode("utf-8"))
 
@@ -126,13 +127,13 @@ def main() -> int:
 
     event = payload.get("hook_event_name", "")
     uuid = ""
-    voice = ""
+    verb = ""
     if event == "Notification":
         raw = _notification_text(payload)
-        voice = config.VOICE_NOTIFY
+        verb = config.CTRL_NOTIFY
     elif event == "PreToolUse" and payload.get("tool_name") == "AskUserQuestion":
         raw = _question_text(payload)
-        voice = config.VOICE_QUESTION
+        verb = config.CTRL_QUESTION
     else:
         # Stop (also the fallback when no event name is present).
         uuid, raw = _stop_text(payload)
@@ -142,7 +143,7 @@ def main() -> int:
         return 0
 
     try:
-        _send(text, voice)
+        _send(text, verb)
         _mark_spoken(payload.get("session_id", ""), uuid)
     except OSError:
         # Daemon not running or mid-restart. The uuid is intentionally NOT

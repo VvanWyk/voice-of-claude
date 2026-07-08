@@ -7,6 +7,8 @@ paying a 1-2s model load on every reply.
 Protocol: newline-delimited UTF-8 over TCP on 127.0.0.1:<TTS_PORT>.
   - any normal line  -> speak it (default voice)
   - __AS__ <voice> <text> -> speak with a one-off Kokoro voice override
+  - __NOTIFY__ <text> / __QUESTION__ <text> -> speak in the per-event voice
+    (TTS_VOICE_NOTIFY / TTS_VOICE_QUESTION, live-changeable via __RELOAD__)
   - __STOP__         -> stop current playback, clear the queue
   - __PAUSE__        -> toggle pause / resume
   - __NEXT__ / __PREV__ -> skip forward / back one sentence chunk
@@ -235,7 +237,9 @@ class TTSDaemon:
         """
         for token in args.split():
             key, _, value = token.partition("=")
-            if key.startswith("TTS_") and value:
+            if key.startswith("TTS_"):
+                # Empty value is meaningful: it resets to the default
+                # (e.g. TTS_VOICE_NOTIFY= -> same voice as replies).
                 os.environ[key] = value
         import engines
 
@@ -833,6 +837,18 @@ class TTSDaemon:
                 if voice and text:
                     log.info("Speak as %s (%d chars): %s", voice, len(text), text[:60])
                     self.enqueue(text, voice)
+            elif line.startswith(config.CTRL_NOTIFY + " "):
+                text = line[len(config.CTRL_NOTIFY) + 1:].strip()
+                if text:
+                    log.info("Notify (%d chars, voice=%s): %s",
+                             len(text), config.VOICE_NOTIFY or "default", text[:60])
+                    self.enqueue(text, config.VOICE_NOTIFY)
+            elif line.startswith(config.CTRL_QUESTION + " "):
+                text = line[len(config.CTRL_QUESTION) + 1:].strip()
+                if text:
+                    log.info("Question (%d chars, voice=%s): %s",
+                             len(text), config.VOICE_QUESTION or "default", text[:60])
+                    self.enqueue(text, config.VOICE_QUESTION)
             elif line == config.CTRL_STOP:
                 self.stop_now()
             elif line == config.CTRL_PAUSE:

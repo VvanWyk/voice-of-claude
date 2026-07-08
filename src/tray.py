@@ -1,7 +1,8 @@
 """System tray icon for The Voice of Claude.
 
-Menu: mute toggle, Kokoro voice switcher (radio list, applied live via the
-daemon's __RELOAD__ verb), stop-speaking, replay-last, a History submenu
+Menu: mute toggle, three Kokoro voice switchers (reply / permission prompt /
+question - radio lists applied live via the daemon's __RELOAD__ verb, the
+event voices offering "(same as reply)"), stop-speaking, replay-last, a History submenu
 (the daemon's last 10 replies, fetched live when the menu opens; click to
 re-speak), WAV export of the latest reply (toast + Explorer reveal), and
 quit. The icon shows a speaker, with a red slash while muted.
@@ -108,9 +109,18 @@ def _make_image(muted: bool):
 
 
 class Tray:
+    # (attribute, env var, menu label, has "(same as reply)" option)
+    VOICE_SLOTS = [
+        ("voice", "TTS_VOICE", "Reply voice", False),
+        ("voice_notify", "TTS_VOICE_NOTIFY", "Prompt voice", True),
+        ("voice_question", "TTS_VOICE_QUESTION", "Question voice", True),
+    ]
+
     def __init__(self) -> None:
         self.muted = config.MUTE
         self.voice = config.VOICE
+        self.voice_notify = config.VOICE_NOTIFY
+        self.voice_question = config.VOICE_QUESTION
         self.icon = None
 
     # -- menu actions ---------------------------------------------------------
@@ -119,15 +129,32 @@ class Tray:
         _send_daemon(config.CTRL_MUTE if self.muted else config.CTRL_UNMUTE)
         icon.icon = _make_image(self.muted)
 
-    def _voice_setter(self, voice: str):
+    def _voice_setter(self, attr: str, env_key: str, voice: str):
         def _set(icon, item) -> None:
-            self.voice = voice
-            # Rebuilds the engine in place; takes a few seconds, done async.
-            _send_daemon(f"{config.CTRL_RELOAD} TTS_VOICE={voice}")
+            setattr(self, attr, voice)
+            # Live config reload on the daemon; empty value = same as reply.
+            _send_daemon(f"{config.CTRL_RELOAD} {env_key}={voice}")
         return _set
 
-    def _voice_checked(self, voice: str):
-        return lambda item: self.voice == voice
+    def _voice_checked(self, attr: str, voice: str):
+        return lambda item: getattr(self, attr) == voice
+
+    def _voice_menu(self, attr: str, env_key: str, inherit: bool):
+        from pystray import Menu, MenuItem as Item
+
+        items = []
+        if inherit:
+            items.append(Item(
+                "(same as reply)",
+                self._voice_setter(attr, env_key, ""),
+                radio=True, checked=self._voice_checked(attr, ""),
+            ))
+        items += [
+            Item(v, self._voice_setter(attr, env_key, v),
+                 radio=True, checked=self._voice_checked(attr, v))
+            for v in VOICES
+        ]
+        return Menu(*items)
 
     def _stop(self, icon, item) -> None:
         _send_daemon(config.CTRL_STOP)
@@ -183,15 +210,14 @@ class Tray:
         import pystray
         from pystray import Menu, MenuItem as Item
 
-        voice_menu = Menu(*[
-            Item(v, self._voice_setter(v), radio=True,
-                 checked=self._voice_checked(v))
-            for v in VOICES
-        ])
+        voice_items = [
+            Item(label, self._voice_menu(attr, env_key, inherit))
+            for attr, env_key, label, inherit in self.VOICE_SLOTS
+        ]
         menu = Menu(
             Item("Mute", self._toggle_mute,
                  checked=lambda item: self.muted),
-            Item("Voice", voice_menu),
+            *voice_items,
             Item("Stop speaking", self._stop),
             Menu.SEPARATOR,
             Item("Replay last reply", self._replay_last),

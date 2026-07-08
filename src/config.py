@@ -160,7 +160,9 @@ PAUSE_TOKEN = "\ue000"
 
 # Control verbs sent over the socket (newline-delimited UTF-8 protocol).
 CTRL_STOP = "__STOP__"
-CTRL_AS = "__AS__"    # __AS__ <voice> <text> - speak with a one-off voice
+CTRL_AS = "__AS__"            # __AS__ <voice> <text> - one-off voice override
+CTRL_NOTIFY = "__NOTIFY__"    # __NOTIFY__ <text> - speak in the notify voice
+CTRL_QUESTION = "__QUESTION__"  # __QUESTION__ <text> - the question voice
 CTRL_MUTE = "__MUTE__"
 CTRL_UNMUTE = "__UNMUTE__"
 CTRL_PING = "__PING__"
