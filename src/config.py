@@ -147,6 +147,11 @@ SPEAK_QUESTIONS = _env_bool("TTS_SPEAK_QUESTIONS", True)
 # redundant with the spoken reply; off by default. Flip on if you want it.
 SPEAK_IDLE = _env_bool("TTS_SPEAK_IDLE", False)
 
+# Invisible marker (private-use codepoint) inserted by text_filter after
+# headings; the engine turns it into extra silence. Never appears in normal
+# text, survives newline collapsing, and is stripped from anything displayed.
+PAUSE_TOKEN = "\ue000"
+
 # Control verbs sent over the socket (newline-delimited UTF-8 protocol).
 CTRL_STOP = "__STOP__"
 CTRL_MUTE = "__MUTE__"

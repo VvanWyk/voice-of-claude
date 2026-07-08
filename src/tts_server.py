@@ -331,7 +331,7 @@ class TTSDaemon:
         try:
             r = subprocess.run(
                 cmd,
-                input=text.encode("utf-8"),
+                input=text.replace(config.PAUSE_TOKEN, "").encode("utf-8"),
                 capture_output=True,
                 timeout=max(5, config.TLDR_TIMEOUT),
                 env=dict(os.environ, TTS_MUTE="1"),
@@ -353,6 +353,13 @@ class TTSDaemon:
 
     def _speak(self, text: str) -> None:
         gap = max(0, config.GAP_MS) / 1000.0
+        # Single-space all whitespace runs: paragraph breaks arrive as double
+        # spaces, but the chunker rejoins sentences with single spaces, and
+        # any mismatch breaks highlight/seek offset lookups.
+        # The engine needs the pause tokens (extra silence after headings);
+        # the overlay text and char offsets must not contain them.
+        speak_text = " ".join(text.split())
+        text = speak_text.replace(config.PAUSE_TOKEN, "")
         tr = Transport()
         self.transport = tr
 
@@ -368,7 +375,7 @@ class TTSDaemon:
             try:
                 # synth_lock serialises engine use with WAV export.
                 with self.synth_lock:
-                    for samples, sr, piece in self.engine.stream(text):
+                    for samples, sr, piece in self.engine.stream(speak_text):
                         if self.interrupt.is_set() or self.shutdown.is_set():
                             return
                         if piece:
@@ -830,7 +837,8 @@ class TTSDaemon:
                     self.seek(int(arg))
             elif line == config.CTRL_HISTORY:
                 items = [
-                    {"ts": e["ts"], "preview": e["text"][:70]}
+                    {"ts": e["ts"],
+                     "preview": e["text"].replace(config.PAUSE_TOKEN, "")[:70]}
                     for e in self.history
                 ]
                 try:

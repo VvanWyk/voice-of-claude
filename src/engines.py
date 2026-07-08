@@ -82,21 +82,33 @@ def cuda_available() -> bool:
         return False
 
 
+# Extra silence rendered for a PAUSE_TOKEN (after headings).
+_PAUSE_TOKEN_S = 0.45
+
+
 def chunk_sentences(text: str, target: int = 220):
-    """Group sentences into ~`target`-char chunks for responsive streaming."""
-    buf = ""
-    for s in _SENTENCE_SPLIT_RE.split(text.strip()):
-        if not s:
-            continue
-        if not buf:
-            buf = s
-        elif len(buf) + 1 + len(s) <= target:
-            buf += " " + s
-        else:
-            yield buf
-            buf = s
-    if buf:
-        yield buf
+    """Yield (chunk, pause_after) grouping sentences into ~`target` chars.
+
+    config.PAUSE_TOKEN is a hard chunk boundary: the chunk before it is
+    yielded with pause_after=True so the engine can add extra silence
+    (structure-aware prosody - text_filter puts tokens after headings).
+    """
+    segments = text.strip().split(config.PAUSE_TOKEN)
+    for seg_idx, segment in enumerate(segments):
+        last_of_segment = seg_idx < len(segments) - 1  # a token followed it
+        buf = ""
+        for s in _SENTENCE_SPLIT_RE.split(segment.strip()):
+            if not s:
+                continue
+            if not buf:
+                buf = s
+            elif len(buf) + 1 + len(s) <= target:
+                buf += " " + s
+            else:
+                yield buf, False
+                buf = s
+        if buf:
+            yield buf, last_of_segment
 
 
 class PiperEngine:
@@ -130,6 +142,8 @@ class PiperEngine:
             self._syn_config = SynthesisConfig(**syn_kwargs)
 
     def stream(self, text: str):
+        # Piper has no per-chunk pause control; just don't feed it the token.
+        text = text.replace(config.PAUSE_TOKEN, " ")
         first = True
         for chunk in self.voice.synthesize(text, syn_config=self._syn_config):
             # Piper doesn't expose per-sentence chunks; label first chunk with
@@ -175,7 +189,7 @@ class KokoroEngine:
             pass
 
     def stream(self, text: str):
-        for piece in chunk_sentences(text, target=100):
+        for piece, pause_after in chunk_sentences(text, target=100):
             # Normalize for natural speech (decimals, ordinals, abbreviations)
             # but keep the original piece so the overlay can highlight it.
             spoken = normalizer.normalize(piece)
@@ -185,8 +199,9 @@ class KokoroEngine:
                 spoken, voice=config.VOICE, speed=config.SPEED, lang=config.LANG,
                 trim=False,
             )
-            # Small silence pad for a natural inter-sentence gap.
-            pad = np.zeros(int(sr * 0.06), dtype=samples.dtype)
+            # Inter-sentence gap; much longer after a heading (pause token).
+            pad_s = 0.06 + (_PAUSE_TOKEN_S if pause_after else 0.0)
+            pad = np.zeros(int(sr * pad_s), dtype=samples.dtype)
             yield np.concatenate([samples, pad]), sr, piece
 
 

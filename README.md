@@ -45,6 +45,10 @@ spacebar). This project adds the missing half: voice *output*.
   and currency are converted to natural spoken form before synthesis
   (`15,200kg` → *fifteen thousand two hundred kilograms*; `3.14` → *three
   point one four*; `1.62 m/s` → *one point six two metres per second*).
+- **Structure-aware prosody** — the markdown's structure shapes the speech:
+  headings become their own sentence followed by a longer pause, list items
+  are announced *"First: … Second: …"*, and tables are skipped with *"I
+  shared a table."*
 - **GPU acceleration** — Kokoro runs on CUDA or DirectML when available; falls
   back to CPU transparently.
 - **TL;DR mode** — replies longer than `TTS_TLDR_CHARS` are summarised to two
