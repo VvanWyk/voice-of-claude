@@ -141,7 +141,8 @@ class PiperEngine:
 
             self._syn_config = SynthesisConfig(**syn_kwargs)
 
-    def stream(self, text: str):
+    def stream(self, text: str, voice: str | None = None):
+        # Piper's voice is the loaded model - per-event voices are Kokoro-only.
         # Piper has no per-chunk pause control; just don't feed it the token.
         text = text.replace(config.PAUSE_TOKEN, " ")
         first = True
@@ -188,7 +189,7 @@ class KokoroEngine:
         except Exception:
             pass
 
-    def stream(self, text: str):
+    def stream(self, text: str, voice: str | None = None):
         for piece, pause_after in chunk_sentences(text, target=100):
             # Normalize for natural speech (decimals, ordinals, abbreviations)
             # but keep the original piece so the overlay can highlight it.
@@ -196,8 +197,8 @@ class KokoroEngine:
             # trim=False preserves the natural audio tail; the default trim=True
             # was clipping the last phoneme of each sentence.
             samples, sr = self.k.create(
-                spoken, voice=config.VOICE, speed=config.SPEED, lang=config.LANG,
-                trim=False,
+                spoken, voice=voice or config.VOICE, speed=config.SPEED,
+                lang=config.LANG, trim=False,
             )
             # Inter-sentence gap; much longer after a heading (pause token).
             pad_s = 0.06 + (_PAUSE_TOKEN_S if pause_after else 0.0)

@@ -34,6 +34,10 @@ spacebar). This project adds the missing half: voice *output*.
 - **Attention chime** — a short sound plays when Claude needs your input
   (permission prompt or `AskUserQuestion`), instead of interrupting the current
   reply.
+- **Per-event voices** — permission prompts and questions can speak in
+  different Kokoro voices than replies (`TTS_VOICE_NOTIFY`,
+  `TTS_VOICE_QUESTION`), so your ears identify what's happening before
+  parsing the words. Replays from history keep their original voice.
 - **Audio ducking** — while Claude speaks, other apps (music, videos) are
   lowered to `TTS_DUCK`% of their volume and restored exactly afterwards.
   Per-session (Windows Core Audio) — the system master volume is untouched.
@@ -172,6 +176,8 @@ before the reply is spoken.
 | `TTS_ENGINE` | `piper` | `piper` (fast) or `kokoro` (natural) |
 | `TTS_DEVICE` | `auto` | `auto`, `cpu`, `cuda`, `dml` — GPU provider for onnxruntime |
 | `TTS_VOICE` | `af_heart` | Kokoro voice id (`af_sarah`, `am_adam`, `bf_emma`, …) |
+| `TTS_VOICE_NOTIFY` | _(unset)_ | Voice for permission/input prompts (empty = `TTS_VOICE`) |
+| `TTS_VOICE_QUESTION` | _(unset)_ | Voice for `AskUserQuestion` (empty = `TTS_VOICE`) |
 | `TTS_PIPER_VOICE` | `en_US-lessac-medium` | Piper voice model under `models/piper/` |
 | `TTS_PIPER_SPEAKER` | _(unset)_ | Speaker index for multi-speaker Piper voices |
 | `TTS_SPEED` | `1.0` | Playback speed (`<1` slower, `>1` faster) |

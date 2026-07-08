@@ -68,6 +68,12 @@ LANG = _env("TTS_LANG", "en-us")
 VOICE = _env("TTS_VOICE", "af_heart")
 KOKORO_THREADS = _env_int("TTS_KOKORO_THREADS", 4)
 
+# Per-event voices (Kokoro only; Piper has a single voice model). Distinct
+# voices let your ears identify a permission prompt or a question before
+# parsing the words. Empty = use TTS_VOICE for that event too.
+VOICE_NOTIFY = _env("TTS_VOICE_NOTIFY", "")     # permission / input prompts
+VOICE_QUESTION = _env("TTS_VOICE_QUESTION", "") # AskUserQuestion
+
 # Piper voice model name (file <name>.onnx under models/piper/).
 PIPER_VOICE = _env("TTS_PIPER_VOICE", "en_US-lessac-medium")
 
@@ -154,6 +160,7 @@ PAUSE_TOKEN = "\ue000"
 
 # Control verbs sent over the socket (newline-delimited UTF-8 protocol).
 CTRL_STOP = "__STOP__"
+CTRL_AS = "__AS__"    # __AS__ <voice> <text> - speak with a one-off voice
 CTRL_MUTE = "__MUTE__"
 CTRL_UNMUTE = "__UNMUTE__"
 CTRL_PING = "__PING__"

@@ -5,7 +5,8 @@ speak. Keeping the model warm is what makes speech start ~instantly instead of
 paying a 1-2s model load on every reply.
 
 Protocol: newline-delimited UTF-8 over TCP on 127.0.0.1:<TTS_PORT>.
-  - any normal line  -> speak it
+  - any normal line  -> speak it (default voice)
+  - __AS__ <voice> <text> -> speak with a one-off Kokoro voice override
   - __STOP__         -> stop current playback, clear the queue
   - __PAUSE__        -> toggle pause / resume
   - __NEXT__ / __PREV__ -> skip forward / back one sentence chunk
@@ -264,10 +265,10 @@ class TTSDaemon:
         self.interrupt.set()
         self._drain()
 
-    def enqueue(self, text: str) -> None:
+    def enqueue(self, text: str, voice: str = "") -> None:
         if config.BARGE_IN:
             self.stop_now()  # latest reply wins
-        self.speak_q.put(text)
+        self.speak_q.put((text, voice))
 
     # --- worker ------------------------------------------------------------
     def worker(self) -> None:
@@ -278,11 +279,12 @@ class TTSDaemon:
             pass
         while not self.shutdown.is_set():
             try:
-                text = self.speak_q.get(timeout=0.2)
+                item = self.speak_q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if text is None:
+            if item is None:
                 break
+            text, voice = item
             if self.muted:
                 continue
             if config.TLDR_CHARS > 0 and len(text) > config.TLDR_CHARS:
@@ -294,13 +296,13 @@ class TTSDaemon:
             # guard keeps replays from stacking up in the history.
             if not self.history or self.history[0]["text"] != text:
                 self.history.appendleft(
-                    {"ts": time.strftime("%H:%M"), "text": text}
+                    {"ts": time.strftime("%H:%M"), "text": text, "voice": voice}
                 )
             self.interrupt.clear()
             factor = max(0, min(100, config.DUCK_PCT)) / 100.0
             self.ducker.duck(factor)
             try:
-                self._speak(text)
+                self._speak(text, voice)
             finally:
                 self.ducker.restore()
 
@@ -351,7 +353,7 @@ class TTSDaemon:
             log.warning("TL;DR error: %s; speaking full reply", e)
         return text
 
-    def _speak(self, text: str) -> None:
+    def _speak(self, text: str, voice: str = "") -> None:
         gap = max(0, config.GAP_MS) / 1000.0
         # Single-space all whitespace runs: paragraph breaks arrive as double
         # spaces, but the chunker rejoins sentences with single spaces, and
@@ -375,7 +377,8 @@ class TTSDaemon:
             try:
                 # synth_lock serialises engine use with WAV export.
                 with self.synth_lock:
-                    for samples, sr, piece in self.engine.stream(speak_text):
+                    for samples, sr, piece in self.engine.stream(
+                            speak_text, voice=voice or None):
                         if self.interrupt.is_set() or self.shutdown.is_set():
                             return
                         if piece:
@@ -589,13 +592,13 @@ class TTSDaemon:
 
     # --- reply history -------------------------------------------------------
     def say_history(self, n: int) -> None:
-        """Re-speak history item n (0 = latest)."""
+        """Re-speak history item n (0 = latest), in its original voice."""
         try:
             item = self.history[n]
         except IndexError:
             return
         log.info("Replay history[%d] (%d chars)", n, len(item["text"]))
-        self.enqueue(item["text"])
+        self.enqueue(item["text"], item.get("voice", ""))
 
     def export_history(self, n: int):
         """Synthesise history item n to a WAV file; returns the path or None."""
@@ -614,7 +617,8 @@ class TTSDaemon:
         t0 = time.time()
         with self.synth_lock:  # wait out any in-flight synthesis
             try:
-                for samples, sr, _piece in self.engine.stream(item["text"]):
+                for samples, sr, _piece in self.engine.stream(
+                        item["text"], voice=item.get("voice") or None):
                     if self.shutdown.is_set():
                         return None
                     parts.append(samples)
@@ -823,6 +827,12 @@ class TTSDaemon:
                     conn.sendall(b"RELOADED\n" if ok else b"RELOAD_FAILED\n")
                 except OSError:
                     pass
+            elif line.startswith(config.CTRL_AS + " "):
+                voice, _, text = line[len(config.CTRL_AS) + 1:].partition(" ")
+                text = text.strip()
+                if voice and text:
+                    log.info("Speak as %s (%d chars): %s", voice, len(text), text[:60])
+                    self.enqueue(text, voice)
             elif line == config.CTRL_STOP:
                 self.stop_now()
             elif line == config.CTRL_PAUSE:

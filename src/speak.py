@@ -25,9 +25,12 @@ import text_filter
 import transcript
 
 
-def _send(text: str) -> None:
+def _send(text: str, voice: str = "") -> None:
     # Protocol is newline-delimited; collapse newlines so the full reply is one line.
     line = " ".join(text.splitlines())
+    if voice:
+        # Per-event voice override (permission prompts / questions).
+        line = f"{config.CTRL_AS} {voice} {line}"
     with socket.create_connection((config.HOST, config.PORT), timeout=1.5) as s:
         s.sendall((line + "\n").encode("utf-8"))
 
@@ -123,10 +126,13 @@ def main() -> int:
 
     event = payload.get("hook_event_name", "")
     uuid = ""
+    voice = ""
     if event == "Notification":
         raw = _notification_text(payload)
+        voice = config.VOICE_NOTIFY
     elif event == "PreToolUse" and payload.get("tool_name") == "AskUserQuestion":
         raw = _question_text(payload)
+        voice = config.VOICE_QUESTION
     else:
         # Stop (also the fallback when no event name is present).
         uuid, raw = _stop_text(payload)
@@ -136,7 +142,7 @@ def main() -> int:
         return 0
 
     try:
-        _send(text)
+        _send(text, voice)
         _mark_spoken(payload.get("session_id", ""), uuid)
     except OSError:
         # Daemon not running or mid-restart. The uuid is intentionally NOT
